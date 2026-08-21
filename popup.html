@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Толмач</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <div class="dir" id="dir">
+      <button class="dir-btn" id="dirBtn" title="Сменить направление">
+        <span id="dirFrom">RU</span>
+        <span class="arrow">→</span>
+        <span id="dirTo">EN</span>
+      </button>
+    </div>
+    <div class="spacer"></div>
+    <div class="spin hidden" id="spin"></div>
+    <button class="ghost" id="settings" title="Настройки">Настройки</button>
+  </header>
+
+  <textarea id="input" placeholder="Вставь текст — перевод появится сам.&#10;Ctrl+Enter — перевести заново."></textarea>
+
+  <div class="chips" id="chips"></div>
+
+  <section class="out">
+    <div class="result" id="result"></div>
+    <div class="alt hidden" id="altWrap">
+      <div class="label">Другой вариант</div>
+      <div class="alt-text" id="altText"></div>
+      <button class="ghost small" id="useAlt">Взять этот</button>
+    </div>
+    <div class="note hidden" id="note"></div>
+    <div class="error hidden" id="error"></div>
+  </section>
+
+  <footer class="bottom">
+    <span class="hint" id="hint">Alt+T переводит выделенное на любой странице</span>
+    <div class="spacer"></div>
+    <button class="primary" id="copy">Копировать</button>
+  </footer>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>
