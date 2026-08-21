@@ -1,0 +1,11 @@
+/* Толмач: единственное, что расширение добавляет в стили самой страницы. */
+/* Вся начинка карточки живёт в shadow root — см. CSS в content.js. */
+#tolmach-root {
+  all: initial;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 2147483647;
+}
