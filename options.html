@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Настройки Толмача</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<main>
+  <header class="head">
+    <h1>Толмач</h1>
+    <p class="sub">Переводчик, который звучит как человек, а не как машина.</p>
+  </header>
+
+  <section class="card">
+    <h2>Ключ Anthropic</h2>
+    <p class="help">
+      Без него переводить нечем. Заведи ключ на
+      <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com</a>,
+      пополни счёт на любую сумму и вставь ключ сюда. Он хранится только в этом браузере
+      и уходит напрямую в Anthropic — больше никуда.
+    </p>
+    <div class="row">
+      <input type="password" id="apiKey" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+      <button class="ghost" id="reveal" title="Показать ключ">Показать</button>
+      <button class="primary" id="test">Проверить</button>
+    </div>
+    <div class="status hidden" id="status"></div>
+  </section>
+
+  <section class="card">
+    <h2>Языки</h2>
+    <p class="help">
+      Толмач сам смотрит, на каком языке текст. Родное уходит в рабочий язык,
+      всё остальное — в родной.
+    </p>
+    <div class="grid">
+      <label>
+        <span>Родной язык</span>
+        <select id="native"></select>
+      </label>
+      <label>
+        <span>Рабочий язык</span>
+        <select id="foreign"></select>
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Как переводить</h2>
+    <div class="grid">
+      <label>
+        <span>Тон по умолчанию</span>
+        <select id="tone"></select>
+      </label>
+      <label>
+        <span>Модель</span>
+        <select id="model"></select>
+      </label>
+    </div>
+    <p class="help" id="modelNote"></p>
+    <label class="check">
+      <input type="checkbox" id="showAlt">
+      <span>Показывать второй вариант перевода</span>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="showBubble">
+      <span>Показывать кнопку рядом с выделенным текстом</span>
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>Личный словарь</h2>
+    <p class="help">
+      Слова, которые Толмач обязан переводить именно так и не иначе.
+      По одной паре на строку: <code>рагпул = rugpull</code>. Работает в обе стороны.
+    </p>
+    <textarea id="glossary" rows="6" spellcheck="false" placeholder="радар = radar&#10;эпоха = epoch"></textarea>
+  </section>
+
+  <section class="card">
+    <h2>Горячие клавиши</h2>
+    <ul class="keys">
+      <li><kbd>Alt</kbd>+<kbd>T</kbd> — перевести выделенное на странице</li>
+      <li><kbd>Alt</kbd>+<kbd>P</kbd> — перевести страницу целиком (нажать ещё раз — вернуть оригинал)</li>
+      <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> — перевести заново в окне расширения</li>
+    </ul>
+    <p class="help">
+      Сочетания можно поменять на странице
+      <a href="#" id="shortcuts">chrome://extensions/shortcuts</a>.
+    </p>
+  </section>
+
+  <footer class="foot" id="saved">Изменения сохраняются сразу.</footer>
+</main>
+<script src="options.js" type="module"></script>
+</body>
+</html>
