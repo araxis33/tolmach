@@ -481,15 +481,17 @@
   width: 36px; height: 36px;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%;
-  border: 1px solid rgba(0,0,0,.08);
-  background: #1b1b1f;
-  color: #f5f3ef;
+  border: 1px solid rgba(0,0,0,.12);
+  background: #1f8a4c;
+  color: #ffffff;
   cursor: pointer;
-  box-shadow: 0 6px 20px rgba(0,0,0,.28);
+  /* Двойная тень: светлый ободок держит кнопку видимой на тёмных сайтах,
+     мягкая тень отделяет её от светлых. */
+  box-shadow: 0 0 0 2px rgba(255,255,255,.85), 0 6px 20px rgba(0,0,0,.3);
   z-index: 2147483647;
   transition: transform .12s ease, background .12s ease;
 }
-.tm-bubble:hover { transform: scale(1.08); background: #2b2b31; }
+.tm-bubble:hover { transform: scale(1.08); background: #23a35c; }
 
 .tm-card {
   position: absolute;
