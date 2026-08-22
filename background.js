@@ -5,6 +5,7 @@ import {
   DEFAULTS,
   translateStream,
   translateSegments,
+  replyStream,
   pickDirection,
   TranslationError
 } from './engine.js';
@@ -100,6 +101,8 @@ chrome.runtime.onConnect.addListener((port) => {
     try {
       if (req.type === 'translate') {
         await handleTranslate(req, post, controller.signal);
+      } else if (req.type === 'reply') {
+        await handleReply(req, post, controller.signal);
       } else if (req.type === 'page') {
         await handlePage(req, post, controller.signal, () => closed);
       }
@@ -145,6 +148,26 @@ async function handleTranslate(req, post, signal) {
   });
 
   post({ type: 'done', raw: result.raw, to: result.to, from: result.from });
+}
+
+async function handleReply(req, post, signal) {
+  const settings = await getSettings();
+  const text = (req.text || '').trim();
+  if (!text) {
+    post({ type: 'error', kind: 'empty', message: 'Нечего отвечать.' });
+    return;
+  }
+
+  post({ type: 'reply-start' });
+
+  const raw = await replyStream({
+    text,
+    settings,
+    signal,
+    onDelta: (_chunk, full) => post({ type: 'reply-delta', full })
+  });
+
+  post({ type: 'reply-done', raw });
 }
 
 // Куски страницы шлём пачками: экономнее по токенам и модель видит контекст.
