@@ -1,4 +1,4 @@
-import { DEFAULTS, TONES, splitResult, pickDirection } from './engine.js';
+import { DEFAULTS, TONES, splitResult, pickDirection, formatCost } from './engine.js';
 
 const SHORT = { ru: 'RU', en: 'EN', de: 'DE', es: 'ES', fr: 'FR', zh: 'ZH', uk: 'UK', tr: 'TR' };
 
@@ -164,6 +164,7 @@ function translate(force) {
       paint(parseStream(msg.full));
     } else if (msg.type === 'done') {
       spin.classList.add('hidden');
+      showMoney(msg.cost, msg.left);
       paint(splitResult(msg.raw));
       dirFrom.textContent = SHORT[msg.from] || '?';
       dirTo.textContent = SHORT[msg.to] || '?';
@@ -217,6 +218,16 @@ function copyResult() {
       setTimeout(() => (copyBtn.textContent = 'Копировать'), 1400);
     }
   );
+}
+
+// В попапе нет отдельного места под цифры — пишем в строку подсказки внизу.
+function showMoney(cost, left) {
+  const hint = document.getElementById('hint');
+  if (!hint) return;
+  const parts = [];
+  if (cost) parts.push('−' + formatCost(cost));
+  if (typeof left === 'number') parts.push('осталось ' + formatCost(left));
+  if (parts.length) hint.textContent = parts.join('  ·  ');
 }
 
 function showError(message, kind) {

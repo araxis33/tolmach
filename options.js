@@ -42,7 +42,8 @@ const FIELDS = {
   showBubble: { el: () => $('showBubble'), prop: 'checked' },
   glossary: { el: () => $('glossary'), prop: 'value' },
   persona: { el: () => $('persona'), prop: 'value' },
-  replyModel: { el: () => $('replyModel'), prop: 'value' }
+  replyModel: { el: () => $('replyModel'), prop: 'value' },
+  balance: { el: () => $('balance'), prop: 'value' }
 };
 
 init();
@@ -79,6 +80,7 @@ async function init() {
   $('test').addEventListener('click', testKey);
 
   await paintSpend();
+  $('balance').addEventListener('input', () => setTimeout(paintSpend, 250));
   $('spendReset').addEventListener('click', async () => {
     if (!confirm('Обнулить счётчик расходов? Деньги это не вернёт, только статистику.')) return;
     await chrome.storage.local.remove('spend');
@@ -104,6 +106,46 @@ async function init() {
 }
 
 // ——— расходы ——————————————————————————————————————————————————
+// Главная строка во всём разделе: не «сколько потратил», а «сколько осталось».
+async function paintLeft(spend) {
+  const box = $('spendLeft');
+  const raw = String($('balance').value || '').replace(',', '.').trim();
+  const start = parseFloat(raw);
+
+  if (!raw) {
+    box.textContent = 'Впиши сумму выше — и здесь будет видно, сколько осталось.';
+    box.classList.remove('warn');
+    return;
+  }
+  if (!isFinite(start)) {
+    box.textContent = 'Это не похоже на сумму. Нужно число, например 5.';
+    box.classList.add('warn');
+    return;
+  }
+
+  const spent = (spend || {}).sinceBalance || 0;
+  const left = Math.max(0, start - spent);
+
+  const total = (spend || {}).total || {};
+  const replies = total.reply || { n: 0, cost: 0 };
+  const perReply = replies.n ? replies.cost / replies.n : 0;
+
+  const tail = perReply
+    ? ' — это примерно ' + Math.floor(left / perReply) + ' ' + plural(Math.floor(left / perReply), 'ответ', 'ответа', 'ответов')
+    : '';
+
+  box.textContent = 'Осталось ' + formatCost(left) + tail + '. Потрачено с последнего пополнения: ' + formatCost(spent) + '.';
+  box.classList.toggle('warn', left < start * 0.15);
+}
+
+function plural(n, one, few, many) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
 const SPEND_ROWS = [
   ['reply', 'Ответы'],
   ['translate', 'Переводы'],
@@ -140,8 +182,11 @@ async function paintSpend() {
   table.textContent = '';
   if (!spend || !spend.days) {
     note.textContent = 'Пока ничего не потрачено — счётчик начнёт считать с первого запроса.';
+    await paintLeft(null);
     return;
   }
+
+  await paintLeft(spend);
 
   const today = new Date().toISOString().slice(0, 10);
   const day = sumDays(spend, today);

@@ -197,3 +197,11 @@ kbd {
   border-top: 1px solid rgba(128,128,128,.16);
 }
 .spend td.spend-label { text-align: left; opacity: .75; }
+
+/* Остаток — самая важная строка раздела, поэтому крупнее подсказок. */
+.left {
+  margin: 10px 0 14px;
+  font-size: 14px;
+}
+.left.warn { color: #c0392b; font-weight: 500; }
+.unit { font-size: 13px; opacity: .7; white-space: nowrap; }

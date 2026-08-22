@@ -41,6 +41,9 @@ async function recordSpend(kind, model, usage) {
   if (!spend.days[today]) spend.days[today] = emptyLedger();
   if (!spend.total[kind]) spend.total[kind] = emptyBucket();
 
+  // Отдельный счётчик от последнего пополнения: по нему считается остаток.
+  spend.sinceBalance = (spend.sinceBalance || 0) + cost;
+
   for (const bucket of [spend.days[today][kind], spend.total[kind]]) {
     bucket.n += 1;
     bucket.cost += cost;
@@ -55,6 +58,26 @@ async function recordSpend(kind, model, usage) {
   await chrome.storage.local.set({ [SPEND_KEY]: spend });
   return cost;
 }
+
+// Остаток API наружу не отдаёт. Считаем от суммы, которую он вписал сам.
+async function moneyLeft() {
+  const stored = await chrome.storage.local.get(['balance', SPEND_KEY]);
+  const start = parseFloat(String(stored.balance || '').replace(',', '.'));
+  if (!isFinite(start)) return null;
+  const spent = (stored[SPEND_KEY] || {}).sinceBalance || 0;
+  return Math.max(0, start - spent);
+}
+
+// Вписал новую сумму — значит пополнил: считаем траты с нуля.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.balance) return;
+  chrome.storage.local.get([SPEND_KEY]).then((stored) => {
+    const spend = stored[SPEND_KEY];
+    if (!spend) return;
+    spend.sinceBalance = 0;
+    chrome.storage.local.set({ [SPEND_KEY]: spend });
+  });
+});
 
 // ——— контекстное меню и горячие клавиши ———————————————————————
 const MENU_SELECTION = 'tolmach-selection';
@@ -188,7 +211,7 @@ async function handleTranslate(req, post, signal) {
   });
 
   const cost = await recordSpend('translate', result.model, result.usage);
-  post({ type: 'done', raw: result.raw, to: result.to, from: result.from, cost });
+  post({ type: 'done', raw: result.raw, to: result.to, from: result.from, cost, left: await moneyLeft() });
 }
 
 async function handleReply(req, post, signal) {
@@ -210,7 +233,7 @@ async function handleReply(req, post, signal) {
   });
 
   const cost = await recordSpend('reply', result.model, result.usage);
-  post({ type: 'reply-done', raw: result.raw, cost });
+  post({ type: 'reply-done', raw: result.raw, cost, left: await moneyLeft() });
 }
 
 // Куски страницы шлём пачками: экономнее по токенам и модель видит контекст.

@@ -57,12 +57,18 @@
 
   // Тот же формат, что в engine.js: content script не умеет импортировать.
   const fmtCost = (v) => {
-    if (!v) return '';
-    if (v < 1) {
-      const cents = v * 100;
-      return (cents < 1 ? cents.toFixed(2) : cents.toFixed(1)).replace('.', ',') + ' ¢';
-    }
-    return v.toFixed(2).replace('.', ',') + ' $';
+    const n = Number(v) || 0;
+    if (n === 0) return '0 $';
+    return n.toFixed(n < 1 ? 3 : 2).replace('.', ',') + ' $';
+  };
+
+  // «Списалось столько, осталось столько» — вторая половина и есть то,
+  // ради чего счётчик вообще нужен.
+  const costLine = (cost, left) => {
+    const parts = [];
+    if (cost) parts.push('−' + fmtCost(cost));
+    if (typeof left === 'number') parts.push('осталось ' + fmtCost(left));
+    return parts.join('  ·  ');
   };
 
   const el = (tag, cls, text) => {
@@ -289,7 +295,7 @@
     const spinner = el('div', 'tm-spinner');
     const spacer = el('div', 'tm-spacer');
     const cost = el('div', 'tm-cost', '');
-    cost.title = 'Сколько стоил этот запрос';
+    cost.title = 'Списано за этот запрос и сколько осталось на счету';
     const close = el('button', 'tm-icon-btn', '✕');
     close.title = 'Закрыть (Esc)';
     close.addEventListener('click', closeCard);
@@ -498,7 +504,7 @@
         render(parseStream(msg.full));
       } else if (msg.type === 'done') {
         card.spinner.classList.add('hidden');
-        card.cost.textContent = fmtCost(msg.cost);
+        card.cost.textContent = costLine(msg.cost, msg.left);
         render(parseStream(msg.raw));
         card.dir.textContent = `${SHORT[msg.from] || '?'} → ${SHORT[msg.to] || '?'}`;
       } else if (msg.type === 'error') {
@@ -545,7 +551,7 @@
         renderReplies(parseReplyStream(msg.full));
       } else if (msg.type === 'reply-done') {
         card.spinner.classList.add('hidden');
-        card.cost.textContent = fmtCost(msg.cost);
+        card.cost.textContent = costLine(msg.cost, msg.left);
         renderReplies(parseReplyStream(msg.raw));
       } else if (msg.type === 'error') {
         card.replies.classList.add('hidden');

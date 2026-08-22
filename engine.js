@@ -14,7 +14,8 @@ export const DEFAULTS = {
   showAlt: true,       // просить второй вариант
   glossary: '',        // личный словарь: «строка = перевод», по одной на строку
   persona: '',         // «кто ты» — голос, которым пишутся ответы на чужой текст
-  replyModel: 'claude-sonnet-5' // ответы пишутся пачками, их дешевле держать на Sonnet
+  replyModel: 'claude-sonnet-5', // ответы пишутся пачками, их дешевле держать на Sonnet
+  balance: ''          // сколько денег на счету по его словам: API остаток не отдаёт
 };
 
 // Цены за миллион токенов. Числами, а не строками: по ним считаются деньги.
@@ -35,14 +36,15 @@ export function priceOf(model, usage, now = new Date()) {
   return ((fresh + cached) * rate.in + (usage.output || 0) * rate.out) / 1e6;
 }
 
-/** Мелкие суммы читаются в центах, крупные — в долларах. */
+/**
+ * Всегда в долларах. Центы пробовали — знак ¢ читается плохо, а лишний
+ * пересчёт в голове мешает понять, много это или мало.
+ */
 export function formatCost(value) {
-  if (!value) return '0 ¢';
-  if (value < 1) {
-    const cents = value * 100;
-    return (cents < 1 ? cents.toFixed(2) : cents.toFixed(1)).replace('.', ',') + ' ¢';
-  }
-  return value.toFixed(2).replace('.', ',') + ' $';
+  const v = Number(value) || 0;
+  if (v === 0) return '0 $';
+  const digits = v < 1 ? 3 : 2;
+  return v.toFixed(digits).replace('.', ',') + ' $';
 }
 
 export const MODELS = [
