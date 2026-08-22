@@ -9,7 +9,9 @@ import {
   makeFence,
   wrapSource,
   parseReplies,
-  composeReplyInput
+  composeReplyInput,
+  priceOf,
+  formatCost
 } from './engine.js';
 
 let failed = 0;
@@ -216,6 +218,46 @@ check(
   (composeReplyInput({ text: "пост", context: { post: "" } }).match(/пост/g) || []).length,
   1
 );
+
+
+// ——— деньги ————————————————————————————————————————————————————
+const USE = { input: 1000000, output: 0, cacheRead: 0, cacheWrite: 0 };
+const AFTER_INTRO = new Date('2026-09-15T00:00:00Z');
+const DURING_INTRO = new Date('2026-08-22T00:00:00Z');
+
+check('миллион входных токенов Opus стоит 5 долларов', priceOf('claude-opus-5', USE), 5);
+
+check(
+  'у Sonnet до конца августа действует вводная цена',
+  priceOf('claude-sonnet-5', USE, DURING_INTRO),
+  2
+);
+
+check(
+  'после 31 августа Sonnet считается по обычной цене',
+  priceOf('claude-sonnet-5', USE, AFTER_INTRO),
+  3
+);
+
+check(
+  'выход дороже входа впятеро',
+  priceOf('claude-opus-5', { input: 0, output: 1000000 }),
+  25
+);
+
+check(
+  'чтение из кэша стоит десятую часть',
+  priceOf('claude-opus-5', { input: 0, output: 0, cacheRead: 1000000 }),
+  0.5
+);
+
+check('незнакомая модель не считается', priceOf('claude-выдумка-9', USE), 0);
+check('без расхода нет и цены', priceOf('claude-opus-5', null), 0);
+
+check('мелкие суммы показываются в центах', formatCost(0.017), '1,7 ¢');
+check('совсем мелкие — с двумя знаками', formatCost(0.0042), '0,42 ¢');
+check('крупные показываются в долларах', formatCost(12.3456), '12,35 $');
+check('ноль остаётся нулём', formatCost(0), '0 ¢');
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);

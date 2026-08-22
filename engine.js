@@ -13,8 +13,37 @@ export const DEFAULTS = {
   showBubble: true,    // показывать кнопку у выделения
   showAlt: true,       // просить второй вариант
   glossary: '',        // личный словарь: «строка = перевод», по одной на строку
-  persona: ''          // «кто ты» — голос, которым пишутся ответы на чужой текст
+  persona: '',         // «кто ты» — голос, которым пишутся ответы на чужой текст
+  replyModel: 'claude-sonnet-5' // ответы пишутся пачками, их дешевле держать на Sonnet
 };
+
+// Цены за миллион токенов. Числами, а не строками: по ним считаются деньги.
+export const PRICES = {
+  'claude-opus-5': { in: 5, out: 25 },
+  'claude-sonnet-5': { in: 3, out: 15, intro: { in: 2, out: 10, until: '2026-08-31' } },
+  'claude-haiku-4-5': { in: 1, out: 5 }
+};
+
+/** Цена запроса в долларах — по числам, которые вернул сам API. */
+export function priceOf(model, usage, now = new Date()) {
+  const p = PRICES[model];
+  if (!p || !usage) return 0;
+  const rate = p.intro && now <= new Date(p.intro.until + 'T23:59:59Z') ? p.intro : p;
+  const fresh = (usage.input || 0) + (usage.cacheWrite || 0);
+  // Чтение из кэша стоит десятую часть обычного входа.
+  const cached = (usage.cacheRead || 0) * 0.1;
+  return ((fresh + cached) * rate.in + (usage.output || 0) * rate.out) / 1e6;
+}
+
+/** Мелкие суммы читаются в центах, крупные — в долларах. */
+export function formatCost(value) {
+  if (!value) return '0 ¢';
+  if (value < 1) {
+    const cents = value * 100;
+    return (cents < 1 ? cents.toFixed(2) : cents.toFixed(1)).replace('.', ',') + ' ¢';
+  }
+  return value.toFixed(2).replace('.', ',') + ' $';
+}
 
 export const MODELS = [
   { id: 'claude-opus-5', label: 'Opus 5 — лучшее качество', note: '$5 / $25 за млн токенов' },
@@ -211,7 +240,7 @@ function buildBody({ model, system, text, maxTokens, fence, effort = 'low' }) {
 }
 
 // Запрос к API. Один на все режимы: меняется только системный промпт.
-async function callApi({ cfg, system, text, fence, maxTokens, signal, effort }) {
+async function callApi({ cfg, system, text, fence, maxTokens, signal, effort, model }) {
   return fetch(API_URL, {
     method: 'POST',
     signal,
@@ -222,16 +251,18 @@ async function callApi({ cfg, system, text, fence, maxTokens, signal, effort }) 
       // Без этого заголовка API отклоняет запросы с origin браузера.
       'anthropic-dangerous-direct-browser-access': 'true'
     },
-    body: JSON.stringify(buildBody({ model: cfg.model, system, text, maxTokens, fence, effort }))
+    body: JSON.stringify(buildBody({ model: model || cfg.model, system, text, maxTokens, fence, effort }))
   });
 }
 
-// Чтение потока SSE до конца. Возвращает весь текст, что напечатала модель.
+// Чтение потока SSE до конца. Возвращает текст и расход токенов:
+// точные числа присылает сам API, гадать по длине текста не нужно.
 async function readStream(res, onDelta) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -257,11 +288,23 @@ async function readStream(res, onDelta) {
         full += ev.delta.text;
         if (onDelta) onDelta(ev.delta.text, full);
       }
+      if (ev.type === 'message_start' && ev.message && ev.message.usage) {
+        const u = ev.message.usage;
+        usage.input = u.input_tokens || 0;
+        usage.output = u.output_tokens || 0;
+        usage.cacheRead = u.cache_read_input_tokens || 0;
+        usage.cacheWrite = u.cache_creation_input_tokens || 0;
+      }
+      // Итог по выходу приходит в самом конце потока.
+      if (ev.type === 'message_delta' && ev.usage) {
+        if (typeof ev.usage.output_tokens === 'number') usage.output = ev.usage.output_tokens;
+        if (typeof ev.usage.input_tokens === 'number') usage.input = ev.usage.input_tokens;
+      }
     }
   }
 
   if (!full.trim()) throw new TranslationError('Пустой ответ от модели.', 'empty');
-  return full;
+  return { text: full, usage };
 }
 
 export class TranslationError extends Error {
@@ -329,8 +372,8 @@ export async function translateStream({
   const res = await callApi({ cfg, system, text, fence, maxTokens, signal });
   if (!res.ok) throw await readError(res);
 
-  const full = await readStream(res, onDelta);
-  return { raw: full, ...dir };
+  const { text: full, usage } = await readStream(res, onDelta);
+  return { raw: full, usage, model: cfg.model, ...dir };
 }
 
 // ——— пакетный перевод страницы —————————————————————————————————
@@ -454,11 +497,14 @@ export async function replyStream({ text, context, settings, maxTokens = 16000, 
   const fence = makeFence(payload);
   const system = buildReplySystem({ persona: cfg.persona, fence, glossLang: cfg.native });
 
+  // Ответы держим на своей модели: их пишут пачками, и Sonnet тут дешевле вдвое.
+  const model = cfg.replyModel || cfg.model;
   // high — уровень по умолчанию у модели; на low ответы выходили не вникая.
-  const res = await callApi({ cfg, system, text: payload, fence, maxTokens, signal, effort: 'high' });
+  const res = await callApi({ cfg, system, text: payload, fence, maxTokens, signal, effort: 'high', model });
   if (!res.ok) throw await readError(res);
 
-  return readStream(res, onDelta);
+  const { text: written, usage } = await readStream(res, onDelta);
+  return { raw: written, usage, model };
 }
 
 const SEG_OPEN = '⟦';
@@ -511,7 +557,7 @@ function buildSegmentSystem({ to, from, glossary, fence }) {
   return lines.join('\n');
 }
 
-/** Переводит пачку кусков. Возвращает Map индекс → перевод. */
+/** Переводит пачку кусков. Возвращает Map индекс → перевод и расход токенов. */
 export async function translateSegments({ segments, settings, to, from, signal }) {
   const cfg = { ...DEFAULTS, ...settings };
   if (!cfg.apiKey) throw new TranslationError('Не задан ключ API.', 'nokey');
@@ -520,48 +566,11 @@ export async function translateSegments({ segments, settings, to, from, signal }
   const fence = makeFence(packed);
   const system = buildSegmentSystem({ to, from, glossary: cfg.glossary, fence });
 
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    signal,
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': cfg.apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify(
-      buildBody({ model: cfg.model, system, text: packed, maxTokens: 32000, fence })
-    )
-  });
-
+  const res = await callApi({ cfg, system, text: packed, fence, maxTokens: 32000, signal });
   if (!res.ok) throw await readError(res);
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let full = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (!payload) continue;
-      let ev;
-      try {
-        ev = JSON.parse(payload);
-      } catch {
-        continue;
-      }
-      if (ev.type === 'error') throw new TranslationError(ev.error?.message || 'Поток оборвался', 'api');
-      if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') full += ev.delta.text;
-    }
-  }
-
-  return unpackSegments(full, segments.length);
+  const { text: full, usage } = await readStream(res);
+  return { map: unpackSegments(full, segments.length), usage, model: cfg.model };
 }
 
 export { LANG_NAMES };
