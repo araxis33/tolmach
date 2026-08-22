@@ -172,3 +172,28 @@ kbd {
 }
 
 .hidden { display: none; }
+
+/* Расходы: цифры должны читаться колонками, а не разъезжаться. */
+.spend {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 4px 0 12px;
+  font-size: 13px;
+}
+.spend th {
+  text-align: right;
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  opacity: .6;
+  padding: 0 0 6px;
+}
+.spend th:first-child { text-align: left; }
+.spend td {
+  text-align: right;
+  padding: 5px 0;
+  font-variant-numeric: tabular-nums;
+  border-top: 1px solid rgba(128,128,128,.16);
+}
+.spend td.spend-label { text-align: left; opacity: .75; }

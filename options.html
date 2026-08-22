@@ -54,8 +54,12 @@
         <select id="tone"></select>
       </label>
       <label>
-        <span>Модель</span>
+        <span>Модель для перевода</span>
         <select id="model"></select>
+      </label>
+      <label>
+        <span>Модель для ответов</span>
+        <select id="replyModel"></select>
       </label>
     </div>
     <p class="help" id="modelNote"></p>
@@ -67,6 +71,18 @@
       <input type="checkbox" id="showBubble">
       <span>Показывать кнопку рядом с выделенным текстом</span>
     </label>
+  </section>
+
+  <section class="card">
+    <h2>Расходы</h2>
+    <p class="help">
+      Считается по числу токенов, которое возвращает сам API, и по ценам выбранной
+      модели. Это твой счёт, а не оценка. Консоль Anthropic показывает то же самое,
+      но с задержкой и по UTC.
+    </p>
+    <table class="spend" id="spendTable"></table>
+    <p class="help" id="spendNote"></p>
+    <button class="ghost" id="spendReset">Обнулить счётчик</button>
   </section>
 
   <section class="card">

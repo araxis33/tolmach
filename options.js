@@ -1,4 +1,4 @@
-import { DEFAULTS, MODELS, TONES, LANGS } from './engine.js';
+import { DEFAULTS, MODELS, TONES, LANGS, formatCost } from './engine.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -41,7 +41,8 @@ const FIELDS = {
   showAlt: { el: () => $('showAlt'), prop: 'checked' },
   showBubble: { el: () => $('showBubble'), prop: 'checked' },
   glossary: { el: () => $('glossary'), prop: 'value' },
-  persona: { el: () => $('persona'), prop: 'value' }
+  persona: { el: () => $('persona'), prop: 'value' },
+  replyModel: { el: () => $('replyModel'), prop: 'value' }
 };
 
 init();
@@ -50,6 +51,7 @@ async function init() {
   fillSelect($('native'), LANGS.map((l) => [l.id, l.label]));
   fillSelect($('foreign'), LANGS.map((l) => [l.id, l.label]));
   fillSelect($('model'), MODELS.map((m) => [m.id, m.label]));
+  fillSelect($('replyModel'), MODELS.map((m) => [m.id, m.label]));
   fillSelect(
     $('tone'),
     ['natural', 'literal', 'tweet', 'formal'].map((id) => [id, TONES[id].label])
@@ -76,6 +78,13 @@ async function init() {
 
   $('test').addEventListener('click', testKey);
 
+  await paintSpend();
+  $('spendReset').addEventListener('click', async () => {
+    if (!confirm('Обнулить счётчик расходов? Деньги это не вернёт, только статистику.')) return;
+    await chrome.storage.local.remove('spend');
+    await paintSpend();
+  });
+
   $('personaDraft').addEventListener('click', () => {
     const box = $('persona');
     if (box.value.trim() && !confirm('Заменить то, что уже написано, черновиком?')) return;
@@ -92,6 +101,89 @@ async function init() {
   // Один и тот же язык с двух сторон обессмыслил бы перевод.
   $('native').addEventListener('change', () => guardLanguages('native'));
   $('foreign').addEventListener('change', () => guardLanguages('foreign'));
+}
+
+// ——— расходы ——————————————————————————————————————————————————
+const SPEND_ROWS = [
+  ['reply', 'Ответы'],
+  ['translate', 'Переводы'],
+  ['page', 'Страницы целиком']
+];
+
+function sumDays(spend, fromDate) {
+  const out = {};
+  for (const [kind] of SPEND_ROWS) out[kind] = { n: 0, cost: 0 };
+  for (const [day, ledger] of Object.entries(spend.days || {})) {
+    if (day < fromDate) continue;
+    for (const [kind] of SPEND_ROWS) {
+      const b = ledger[kind];
+      if (!b) continue;
+      out[kind].n += b.n || 0;
+      out[kind].cost += b.cost || 0;
+    }
+  }
+  return out;
+}
+
+function dayShift(days) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+async function paintSpend() {
+  const table = $('spendTable');
+  const note = $('spendNote');
+  const stored = await chrome.storage.local.get(['spend']);
+  const spend = stored.spend;
+
+  table.textContent = '';
+  if (!spend || !spend.days) {
+    note.textContent = 'Пока ничего не потрачено — счётчик начнёт считать с первого запроса.';
+    return;
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const day = sumDays(spend, today);
+  const month = sumDays(spend, dayShift(30));
+  const total = spend.total || {};
+
+  const head = document.createElement('tr');
+  ['', 'Сегодня', 'За 30 дней', 'Всего'].forEach((label) => {
+    const th = document.createElement('th');
+    th.textContent = label;
+    head.append(th);
+  });
+  table.append(head);
+
+  for (const [kind, label] of SPEND_ROWS) {
+    const row = document.createElement('tr');
+    const cells = [
+      label,
+      cell(day[kind]),
+      cell(month[kind]),
+      cell(total[kind])
+    ];
+    cells.forEach((text, i) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (i === 0) td.className = 'spend-label';
+      row.append(td);
+    });
+    table.append(row);
+  }
+
+  const replies = total.reply || { n: 0, cost: 0 };
+  note.textContent = replies.n
+    ? `Средний ответ обходится в ${formatCost(replies.cost / replies.n)}. Всего потрачено ${formatCost(
+        SPEND_ROWS.reduce((sum, [kind]) => sum + ((total[kind] || {}).cost || 0), 0)
+      )}.`
+    : 'Ответов пока не было.';
+}
+
+function cell(bucket) {
+  if (!bucket || !bucket.n) return '—';
+  return `${formatCost(bucket.cost)} · ${bucket.n}`;
 }
 
 function fillSelect(select, pairs) {

@@ -55,6 +55,16 @@
     return { x: r.left + window.scrollX, y: r.top + window.scrollY };
   }
 
+  // Тот же формат, что в engine.js: content script не умеет импортировать.
+  const fmtCost = (v) => {
+    if (!v) return '';
+    if (v < 1) {
+      const cents = v * 100;
+      return (cents < 1 ? cents.toFixed(2) : cents.toFixed(1)).replace('.', ',') + ' ¢';
+    }
+    return v.toFixed(2).replace('.', ',') + ' $';
+  };
+
   const el = (tag, cls, text) => {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
@@ -278,10 +288,12 @@
     const dir = el('div', 'tm-dir', '…');
     const spinner = el('div', 'tm-spinner');
     const spacer = el('div', 'tm-spacer');
+    const cost = el('div', 'tm-cost', '');
+    cost.title = 'Сколько стоил этот запрос';
     const close = el('button', 'tm-icon-btn', '✕');
     close.title = 'Закрыть (Esc)';
     close.addEventListener('click', closeCard);
-    head.append(dir, spinner, spacer, close);
+    head.append(dir, spinner, spacer, cost, close);
 
     const body = el('div', 'tm-body');
     const main = el('div', 'tm-main');
@@ -331,7 +343,7 @@
     placeCard(box, rect);
     root.append(box);
 
-    return { root: box, dir, spinner, main, altWrap, altText, noteWrap, replies, chips, reply, copy, parsed: null };
+    return { root: box, dir, spinner, main, altWrap, altText, noteWrap, replies, chips, reply, copy, cost, parsed: null };
   }
 
   function parseStream(raw) {
@@ -460,6 +472,7 @@
     card.replies.classList.add('hidden');
     card.reply.classList.remove('active');
     card.copy.classList.remove('hidden');
+    card.cost.textContent = '';
     card.chips.querySelectorAll('.tm-chip').forEach((c) => {
       c.classList.toggle('active', c.dataset.tone === tone);
     });
@@ -485,6 +498,7 @@
         render(parseStream(msg.full));
       } else if (msg.type === 'done') {
         card.spinner.classList.add('hidden');
+        card.cost.textContent = fmtCost(msg.cost);
         render(parseStream(msg.raw));
         card.dir.textContent = `${SHORT[msg.from] || '?'} → ${SHORT[msg.to] || '?'}`;
       } else if (msg.type === 'error') {
@@ -505,6 +519,7 @@
     card.replies.textContent = '';
     card.replies.classList.remove('hidden');
     card.reply.classList.add('active');
+    card.cost.textContent = '';
     // Общая кнопка копирования относится к переводу — в этом режиме она лишняя.
     card.copy.classList.add('hidden');
     card.chips.querySelectorAll('.tm-chip').forEach((chip) => chip.classList.remove('active'));
@@ -530,6 +545,7 @@
         renderReplies(parseReplyStream(msg.full));
       } else if (msg.type === 'reply-done') {
         card.spinner.classList.add('hidden');
+        card.cost.textContent = fmtCost(msg.cost);
         renderReplies(parseReplyStream(msg.raw));
       } else if (msg.type === 'error') {
         card.replies.classList.add('hidden');
@@ -850,6 +866,11 @@
 .tm-reply-btn:hover { background: rgba(31,138,76,.1); color: #1f8a4c; border-color: rgba(31,138,76,.4); }
 .tm-reply-btn.active { background: #1f8a4c; border-color: #1f8a4c; color: #fff; }
 
+.tm-cost {
+  font-size: 11px; color: #a5a29b; letter-spacing: .02em;
+  margin-right: 8px; white-space: nowrap;
+}
+
 .tm-replies { display: flex; flex-direction: column; gap: 12px; margin-top: 2px; }
 .tm-reply-item {
   border-left: 2px solid rgba(31,138,76,.45);
@@ -888,6 +909,7 @@
   .tm-reply-btn { color: #9c988f; border-color: rgba(255,255,255,.14); }
   .tm-reply-btn:hover { background: rgba(35,163,92,.18); color: #6fd39b; border-color: rgba(111,211,155,.45); }
   .tm-reply-btn.active { background: #1f8a4c; border-color: #1f8a4c; color: #fff; }
+  .tm-cost { color: #7e7b74; }
   .tm-reply-label { color: #7e7b74; }
   .tm-reply-gloss { color: #b3afa7; }
   .tm-reply-copy { background: #303036; color: #ece9e3; border-color: rgba(255,255,255,.14); }
