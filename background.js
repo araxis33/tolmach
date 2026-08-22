@@ -6,6 +6,7 @@ import {
   translateStream,
   translateSegments,
   replyStream,
+  priceOf,
   pickDirection,
   TranslationError
 } from './engine.js';
@@ -14,6 +15,45 @@ import {
 async function getSettings() {
   const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));
   return { ...DEFAULTS, ...stored };
+}
+
+// ——— счётчик расходов ————————————————————————————————————————
+// Токены берём из ответа API, а не прикидываем по длине текста.
+// Консоль Anthropic обновляется с задержкой и по UTC, поэтому живой счёт — здесь.
+const SPEND_KEY = 'spend';
+const SPEND_DAYS = 60;
+
+function emptyBucket() {
+  return { n: 0, cost: 0, tokensIn: 0, tokensOut: 0 };
+}
+
+function emptyLedger() {
+  return { translate: emptyBucket(), reply: emptyBucket(), page: emptyBucket() };
+}
+
+async function recordSpend(kind, model, usage) {
+  if (!usage) return 0;
+  const cost = priceOf(model, usage);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const stored = await chrome.storage.local.get([SPEND_KEY]);
+  const spend = stored[SPEND_KEY] || { days: {}, total: emptyLedger() };
+  if (!spend.days[today]) spend.days[today] = emptyLedger();
+  if (!spend.total[kind]) spend.total[kind] = emptyBucket();
+
+  for (const bucket of [spend.days[today][kind], spend.total[kind]]) {
+    bucket.n += 1;
+    bucket.cost += cost;
+    bucket.tokensIn += (usage.input || 0) + (usage.cacheWrite || 0) + (usage.cacheRead || 0);
+    bucket.tokensOut += usage.output || 0;
+  }
+
+  // Дни копились бы вечно, если их не подрезать.
+  const days = Object.keys(spend.days).sort();
+  while (days.length > SPEND_DAYS) delete spend.days[days.shift()];
+
+  await chrome.storage.local.set({ [SPEND_KEY]: spend });
+  return cost;
 }
 
 // ——— контекстное меню и горячие клавиши ———————————————————————
@@ -147,7 +187,8 @@ async function handleTranslate(req, post, signal) {
     onDelta: (_chunk, full) => post({ type: 'delta', full })
   });
 
-  post({ type: 'done', raw: result.raw, to: result.to, from: result.from });
+  const cost = await recordSpend('translate', result.model, result.usage);
+  post({ type: 'done', raw: result.raw, to: result.to, from: result.from, cost });
 }
 
 async function handleReply(req, post, signal) {
@@ -160,7 +201,7 @@ async function handleReply(req, post, signal) {
 
   post({ type: 'reply-start' });
 
-  const raw = await replyStream({
+  const result = await replyStream({
     text,
     context: req.context,
     settings,
@@ -168,7 +209,8 @@ async function handleReply(req, post, signal) {
     onDelta: (_chunk, full) => post({ type: 'reply-delta', full })
   });
 
-  post({ type: 'reply-done', raw });
+  const cost = await recordSpend('reply', result.model, result.usage);
+  post({ type: 'reply-done', raw: result.raw, cost });
 }
 
 // Куски страницы шлём пачками: экономнее по токенам и модель видит контекст.
@@ -221,13 +263,14 @@ async function handlePage(req, post, signal, isClosed) {
     if (isClosed()) return;
     const chunk = chunks[i];
     try {
-      const translated = await translateSegments({
+      const { map: translated, usage: pageUsage, model: pageModel } = await translateSegments({
         segments: chunk.map((c) => c.text),
         settings,
         to: dir.to,
         from: dir.from,
         signal
       });
+      await recordSpend('page', pageModel, pageUsage);
       const items = [];
       translated.forEach((text, localIndex) => {
         const origin = chunk[localIndex];
