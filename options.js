@@ -1,6 +1,34 @@
 import { DEFAULTS, MODELS, TONES, LANGS } from './engine.js';
 
 const $ = (id) => document.getElementById(id);
+
+// Черновик для кнопки «Подставить черновик». Пример, а не образец для подражания:
+// работает ровно настолько, насколько он про конкретного человека.
+const PERSONA_DRAFT = [
+  "I'm a solo builder in the Base ecosystem. Russian is my first language, I post in English.",
+  '',
+  'What I actually do: I run an on-chain scanner that watches new memecoin pools on Base and',
+  'Robinhood Chain and flags the ones showing real demand. I keep a small site of Base tools.',
+  'I track Aerodrome vote epochs. Most of what I know comes from staring at my own data every',
+  'day, not from reading threads.',
+  '',
+  "How I think: sceptical by default on any new token. Tokenomics and audits first, everything",
+  "else after — I've walked away from projects where those pages in the docs were simply empty.",
+  "I've been wrong in public too: my own safety score turned out to be an anti-predictor of",
+  'which tokens survived, and I said so instead of quietly fixing it.',
+  '',
+  "How I talk: plain and short. No hype words, no shilling, no wagmi. I don't pose as an",
+  "engineer. If I don't know, I say I don't know. When I disagree I say it straight, without",
+  'softening it first.',
+  '',
+  "Outside all that: I'm just a normal person, curious about pretty much everything — food,",
+  'sport, films, history, politics, whatever the thread happens to be about. No specialty in',
+  "any of it, no deep expertise. So when a post isn't about crypto or software, I reply like",
+  "someone with common sense and real interest: react to what they actually said, say what I'd",
+  'say to a friend, ask if I want to know more. Never perform knowledge I don\'t have.',
+  "Don't drag the conversation back to markets or tech. Don't work my projects into a thread",
+  'where nobody asked.'
+].join('\n');
 const status = $('status');
 
 const FIELDS = {
@@ -11,7 +39,8 @@ const FIELDS = {
   model: { el: () => $('model'), prop: 'value' },
   showAlt: { el: () => $('showAlt'), prop: 'checked' },
   showBubble: { el: () => $('showBubble'), prop: 'checked' },
-  glossary: { el: () => $('glossary'), prop: 'value' }
+  glossary: { el: () => $('glossary'), prop: 'value' },
+  persona: { el: () => $('persona'), prop: 'value' }
 };
 
 init();
@@ -45,6 +74,13 @@ async function init() {
   });
 
   $('test').addEventListener('click', testKey);
+
+  $('personaDraft').addEventListener('click', () => {
+    const box = $('persona');
+    if (box.value.trim() && !confirm('Заменить то, что уже написано, черновиком?')) return;
+    box.value = PERSONA_DRAFT;
+    save('persona');
+  });
 
   // Ссылку на chrome://extensions/shortcuts нельзя открыть обычным <a>.
   $('shortcuts').addEventListener('click', (e) => {
