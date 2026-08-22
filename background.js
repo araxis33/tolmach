@@ -162,6 +162,7 @@ async function handleReply(req, post, signal) {
 
   const raw = await replyStream({
     text,
+    context: req.context,
     settings,
     signal,
     onDelta: (_chunk, full) => post({ type: 'reply-delta', full })

@@ -8,7 +8,8 @@ import {
   unpackSegments,
   makeFence,
   wrapSource,
-  parseReplies
+  parseReplies,
+  composeReplyInput
 } from './engine.js';
 
 let failed = 0;
@@ -176,6 +177,45 @@ check(
 check('болтовня до первого маркера не попадает в варианты', parseReplies(['Вот варианты:', '@@1@@', 'сам ответ'].join(NL2))[0].text, 'сам ответ');
 
 check('пустой ответ модели не ломает разбор', parseReplies(''), []);
+
+
+// ——— что видит модель, когда пишет ответ ——————————————————————
+const FULL_CTX = composeReplyInput({
+  text: "выделенный кусок",
+  context: { page: "X — x.com/kto", near: "что было выше", post: "пост целиком" }
+});
+
+check(
+  "текст, на который отвечаем, идёт последним",
+  FULL_CTX.trimEnd().endsWith("выделенный кусок"),
+  true
+);
+
+check(
+  "обстановка идёт от общего к частному",
+  ["WHERE THIS IS", "WHAT CAME BEFORE", "THE FULL POST", "THE TEXT TO REPLY TO"]
+    .map((h) => FULL_CTX.indexOf(h))
+    .every((v, i, a) => v > -1 && (i === 0 || v > a[i - 1])),
+  true
+);
+
+check(
+  "без контекста остаётся только сам текст",
+  composeReplyInput({ text: "только это" }),
+  "THE TEXT TO REPLY TO:" + String.fromCharCode(10) + "только это"
+);
+
+check(
+  "пустые куски контекста не создают пустых заголовков",
+  composeReplyInput({ text: "текст", context: { page: "", near: "", post: "пост" } }).includes("WHERE THIS IS"),
+  false
+);
+
+check(
+  "выделение, совпавшее со всем постом, не дублируется",
+  (composeReplyInput({ text: "пост", context: { post: "" } }).match(/пост/g) || []).length,
+  1
+);
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);

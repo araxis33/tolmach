@@ -122,6 +122,71 @@
     }
   });
 
+  // ——— контекст вокруг выделения ————————————————————————————————
+  // Ответить по существу можно, только понимая, о чём речь. Выделенных слов для
+  // этого мало: берём пост целиком, что шло до него и где мы вообще находимся.
+  const CTX_POST_MAX = 1500;
+  const CTX_NEAR_MAX = 1200;
+  const POST_TAGS = 'article, [role="article"], [data-testid="tweet"], blockquote, li, section';
+
+  const tidy = (s) =>
+    (s || '')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+  // Ищем блок, который и есть «пост»: сначала по разметке, потом по объёму текста.
+  function postBlock(node) {
+    let el = node;
+    if (el && el.nodeType === 3) el = el.parentElement;
+    if (!el || !el.closest) return null;
+
+    const semantic = el.closest(POST_TAGS);
+    if (semantic && tidy(semantic.innerText).length <= CTX_POST_MAX) return semantic;
+
+    // Без разметки поднимаемся, пока текста не хватит, чтобы понять мысль целиком.
+    let cur = el;
+    while (cur && cur !== document.body) {
+      const len = tidy(cur.innerText || '').length;
+      if (len >= 80 && len <= CTX_POST_MAX) return cur;
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  function grabContext(selected) {
+    const out = { page: '', near: '', post: '' };
+    try {
+      out.page = tidy(document.title + ' — ' + location.href).slice(0, 300);
+
+      const sel = window.getSelection();
+      const node = sel && sel.rangeCount ? sel.getRangeAt(0).startContainer : null;
+      const block = postBlock(node);
+      if (!block) return out;
+
+      const post = tidy(block.innerText);
+      // Если выделен и так весь пост, второй раз его слать незачем.
+      if (post && post !== selected) out.post = post.slice(0, CTX_POST_MAX);
+
+      // Соседи сверху: в треде это разговор, который шёл до этого сообщения.
+      const near = [];
+      let prev = block.previousElementSibling;
+      let budget = CTX_NEAR_MAX;
+      while (prev && near.length < 3 && budget > 0) {
+        const t = tidy(prev.innerText || '');
+        if (t.length > 20) {
+          near.unshift(t.slice(0, budget));
+          budget -= t.length;
+        }
+        prev = prev.previousElementSibling;
+      }
+      out.near = near.join('\n---\n').slice(0, CTX_NEAR_MAX);
+    } catch {
+      // Страница может закрыть доступ к чему угодно. Контекст желателен, но не обязателен.
+    }
+    return out;
+  }
+
   // ——— карточка перевода ————————————————————————————————————————
   let card = null;
   let port = null;
@@ -321,7 +386,8 @@
   }
 
   function openCard(text, rect) {
-    current = { text, tone: null, rect };
+    // Контекст берём сразу: выделение живо только сейчас.
+    current = { text, tone: null, rect, context: grabContext(text) };
     closeCard();
     card = buildCard(rect);
     startTranslate(text, rect, null);
@@ -413,7 +479,7 @@
       }
     });
 
-    port.postMessage({ type: 'reply', text });
+    port.postMessage({ type: 'reply', text, context: current.context });
   }
 
   // ——— перевод всей страницы ————————————————————————————————————
