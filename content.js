@@ -12,6 +12,9 @@
   const LANG_LABEL = { ru: 'русский', en: 'английский', de: 'немецкий', es: 'испанский', fr: 'французский', zh: 'китайский', uk: 'украинский', tr: 'турецкий' };
   const SHORT = { ru: 'RU', en: 'EN', de: 'DE', es: 'ES', fr: 'FR', zh: 'ZH', uk: 'UK', tr: 'TR' };
 
+  // Порядок совпадает с промптом: короткий, содержательный, личный.
+  const REPLY_LABELS = ['Коротко', 'По существу', 'От себя'];
+
   const TONE_CHIPS = [
     { id: 'natural', label: 'Естественно' },
     { id: 'literal', label: 'Дословно' },
@@ -170,6 +173,9 @@
     const noteWrap = el('div', 'tm-note hidden');
     body.append(noteWrap);
 
+    const replies = el('div', 'tm-replies hidden');
+    body.append(replies);
+
     const foot = el('div', 'tm-foot');
     const chips = el('div', 'tm-chips');
     TONE_CHIPS.forEach((t) => {
@@ -193,13 +199,16 @@
         }
       );
     });
-    foot.append(chips, copy);
+    const reply = el('button', 'tm-reply-btn', 'Ответить');
+    reply.title = 'Написать три варианта ответа на этот текст';
+    reply.addEventListener('click', () => startReply(current.text));
+    foot.append(chips, reply, copy);
 
     box.append(head, body, foot);
     placeCard(box, rect);
     root.append(box);
 
-    return { root: box, dir, spinner, main, altWrap, altText, noteWrap, chips, copy, parsed: null };
+    return { root: box, dir, spinner, main, altWrap, altText, noteWrap, replies, chips, reply, copy, parsed: null };
   }
 
   function parseStream(raw) {
@@ -219,6 +228,59 @@
     // Пока маркер печатается посимвольно, его обрывок не должен мелькать в тексте.
     rest = rest.replace(/@[@A-Z]*$/, '');
     return { main: rest.trim(), alt, note };
+  }
+
+  // Тот же разбор, что в engine.js: content script не умеет импортировать.
+  function parseReplyStream(raw) {
+    const re = /@@(RU)?(\d+)@@/g;
+    const marks = [];
+    let m;
+    while ((m = re.exec(raw)) !== null) {
+      marks.push({ gloss: Boolean(m[1]), idx: Number(m[2]), start: m.index, end: re.lastIndex });
+    }
+    const slots = new Map();
+    for (let i = 0; i < marks.length; i++) {
+      const cur = marks[i];
+      const next = marks[i + 1];
+      let body = raw.slice(cur.end, next ? next.start : raw.length);
+      body = body.replace(/@[@A-Z0-9]*$/i, '').trim();
+      if (!body) continue;
+      const slot = slots.get(cur.idx) || { text: '', gloss: '' };
+      if (cur.gloss) slot.gloss = body;
+      else slot.text = body;
+      slots.set(cur.idx, slot);
+    }
+    return [...slots.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, v]) => v)
+      .filter((v) => v.text);
+  }
+
+  function renderReplies(list) {
+    if (!card) return;
+    card.replies.textContent = '';
+    list.forEach((item, i) => {
+      const box = el('div', 'tm-reply-item');
+      box.append(el('div', 'tm-reply-label', REPLY_LABELS[i] || `Вариант ${i + 1}`));
+      box.append(el('div', 'tm-reply-text', item.text));
+      if (item.gloss) box.append(el('div', 'tm-reply-gloss', item.gloss));
+
+      const take = el('button', 'tm-reply-copy', 'Копировать');
+      take.addEventListener('click', () => {
+        navigator.clipboard.writeText(item.text).then(
+          () => {
+            take.textContent = 'Скопировано';
+            setTimeout(() => (take.textContent = 'Копировать'), 1400);
+          },
+          () => {
+            take.textContent = 'Не вышло';
+            setTimeout(() => (take.textContent = 'Копировать'), 1400);
+          }
+        );
+      });
+      box.append(take);
+      card.replies.append(box);
+    });
   }
 
   function render(parsed) {
@@ -271,6 +333,9 @@
     card.main.textContent = '';
     card.altWrap.classList.add('hidden');
     card.noteWrap.classList.add('hidden');
+    card.replies.classList.add('hidden');
+    card.reply.classList.remove('active');
+    card.copy.classList.remove('hidden');
     card.chips.querySelectorAll('.tm-chip').forEach((c) => {
       c.classList.toggle('active', c.dataset.tone === tone);
     });
@@ -304,6 +369,51 @@
     });
 
     port.postMessage({ type: 'translate', text, tone });
+  }
+
+  function startReply(text) {
+    if (!card || !text) return;
+
+    card.spinner.classList.remove('hidden');
+    card.main.textContent = '';
+    card.altWrap.classList.add('hidden');
+    card.noteWrap.classList.add('hidden');
+    card.replies.textContent = '';
+    card.replies.classList.remove('hidden');
+    card.reply.classList.add('active');
+    // Общая кнопка копирования относится к переводу — в этом режиме она лишняя.
+    card.copy.classList.add('hidden');
+    card.chips.querySelectorAll('.tm-chip').forEach((chip) => chip.classList.remove('active'));
+
+    port?.disconnect();
+    try {
+      port = chrome.runtime.connect({ name: 'tolmach' });
+    } catch {
+      showError('Расширение обновилось — перезагрузи страницу.', 'reload');
+      return;
+    }
+
+    port.onDisconnect.addListener(() => {
+      port = null;
+    });
+
+    port.onMessage.addListener((msg) => {
+      if (!card) return;
+      if (msg.type === 'reply-start') {
+        card.dir.textContent = 'Ответ';
+        card.dir.title = 'Три варианта ответа на выделенный текст';
+      } else if (msg.type === 'reply-delta') {
+        renderReplies(parseReplyStream(msg.full));
+      } else if (msg.type === 'reply-done') {
+        card.spinner.classList.add('hidden');
+        renderReplies(parseReplyStream(msg.raw));
+      } else if (msg.type === 'error') {
+        card.replies.classList.add('hidden');
+        showError(msg.message, msg.kind);
+      }
+    });
+
+    port.postMessage({ type: 'reply', text });
   }
 
   // ——— перевод всей страницы ————————————————————————————————————
@@ -544,6 +654,7 @@
 .tm-alt { margin-top: 13px; padding-top: 11px; border-top: 1px dashed rgba(0,0,0,.13); }
 .tm-alt-text { white-space: pre-wrap; color: #4a4842; }
 .tm-alt.hidden, .tm-note.hidden { display: none; }
+.tm-replies.hidden, .tm-copy.hidden { display: none; }
 
 .tm-note {
   margin-top: 12px; padding: 9px 11px;
@@ -605,6 +716,37 @@
 }
 .tm-toast-btn:hover { background: rgba(255,255,255,.1); }
 
+.tm-reply-btn {
+  font: inherit; font-size: 12px;
+  padding: 5px 12px; border-radius: 8px;
+  border: 1px solid rgba(0,0,0,.13);
+  background: transparent; color: #6b6862; cursor: pointer;
+  margin-left: 6px;
+}
+.tm-reply-btn:hover { background: rgba(31,138,76,.1); color: #1f8a4c; border-color: rgba(31,138,76,.4); }
+.tm-reply-btn.active { background: #1f8a4c; border-color: #1f8a4c; color: #fff; }
+
+.tm-replies { display: flex; flex-direction: column; gap: 12px; margin-top: 2px; }
+.tm-reply-item {
+  border-left: 2px solid rgba(31,138,76,.45);
+  padding: 2px 0 2px 11px;
+}
+.tm-reply-label {
+  font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+  color: #93908a; margin-bottom: 4px;
+}
+.tm-reply-text { white-space: pre-wrap; }
+.tm-reply-gloss {
+  margin-top: 5px; font-size: 12.5px; color: #6b6862; white-space: pre-wrap;
+}
+.tm-reply-copy {
+  margin-top: 7px; font: inherit; font-size: 11.5px;
+  padding: 3px 10px; border-radius: 7px;
+  border: 1px solid rgba(0,0,0,.13);
+  background: #fff; color: #17171a; cursor: pointer;
+}
+.tm-reply-copy:hover { background: #efece7; }
+
 @media (prefers-color-scheme: dark) {
   .tm-card { background: #1f1f23; color: #ece9e3; border-color: rgba(255,255,255,.1); }
   .tm-head, .tm-foot { background: #26262b; border-color: rgba(255,255,255,.08); }
@@ -619,6 +761,13 @@
   .tm-note { background: rgba(201,100,66,.14); color: #e0bfb2; }
   .tm-icon-btn:hover { background: rgba(255,255,255,.1); color: #ece9e3; }
   .tm-error { color: #e58f72; }
+  .tm-reply-btn { color: #9c988f; border-color: rgba(255,255,255,.14); }
+  .tm-reply-btn:hover { background: rgba(35,163,92,.18); color: #6fd39b; border-color: rgba(111,211,155,.45); }
+  .tm-reply-btn.active { background: #1f8a4c; border-color: #1f8a4c; color: #fff; }
+  .tm-reply-label { color: #7e7b74; }
+  .tm-reply-gloss { color: #b3afa7; }
+  .tm-reply-copy { background: #303036; color: #ece9e3; border-color: rgba(255,255,255,.14); }
+  .tm-reply-copy:hover { background: #3a3a41; }
 }
 `;
 })();
