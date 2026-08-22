@@ -7,7 +7,8 @@ import {
   packSegments,
   unpackSegments,
   makeFence,
-  wrapSource
+  wrapSource,
+  parseReplies
 } from './engine.js';
 
 let failed = 0;
@@ -121,6 +122,60 @@ check(
   })(),
   false
 );
+
+
+// ——— варианты ответа ——————————————————————————————————————————
+const NL2 = String.fromCharCode(10);
+const REPLIES = [
+  '@@1@@', 'nice, that lines up with what I see',
+  '@@RU1@@', 'славно, сходится с тем, что вижу',
+  '@@2@@', 'the epoch closed 12% under target',
+  '@@RU2@@', 'эпоха закрылась на 12% ниже цели',
+  '@@3@@', 'been there, took me a week',
+  '@@RU3@@', 'знакомо, у меня ушла неделя'
+].join(NL2);
+
+check('три варианта разбираются', parseReplies(REPLIES).length, 3);
+
+check(
+  'текст варианта берётся без маркера',
+  parseReplies(REPLIES)[1].text,
+  'the epoch closed 12% under target'
+);
+
+check(
+  'подстрочник попадает в свой вариант',
+  parseReplies(REPLIES)[2].gloss,
+  'знакомо, у меня ушла неделя'
+);
+
+check(
+  'порядок вариантов не зависит от порядка в ответе',
+  parseReplies(['@@2@@', 'второй', '@@1@@', 'первый'].join(NL2)).map((r) => r.text),
+  ['первый', 'второй']
+);
+
+check(
+  'недописанный поток отдаёт то, что уже пришло',
+  parseReplies(['@@1@@', 'готовый ответ', '@@RU1@@', 'перевод', '@@2@@'].join(NL2)).length,
+  1
+);
+
+check(
+  'обрывок маркера не попадает в текст',
+  parseReplies(['@@1@@', 'ответ целиком', '@@R'].join(NL2))[0].text,
+  'ответ целиком'
+);
+
+check(
+  'подстрочник без своего ответа отбрасывается',
+  parseReplies(['@@RU1@@', 'перевод без ответа'].join(NL2)).length,
+  0
+);
+
+check('болтовня до первого маркера не попадает в варианты', parseReplies(['Вот варианты:', '@@1@@', 'сам ответ'].join(NL2))[0].text, 'сам ответ');
+
+check('пустой ответ модели не ломает разбор', parseReplies(''), []);
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);
