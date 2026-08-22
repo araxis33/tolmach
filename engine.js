@@ -192,7 +192,7 @@ export function splitResult(raw) {
   return { main: rest.trim(), alt, note };
 }
 
-function buildBody({ model, system, text, maxTokens, fence }) {
+function buildBody({ model, system, text, maxTokens, fence, effort = 'low' }) {
   const body = {
     model,
     max_tokens: maxTokens,
@@ -203,13 +203,15 @@ function buildBody({ model, system, text, maxTokens, fence }) {
   // Haiku 4.5 не принимает adaptive thinking и output_config.effort.
   if (!/haiku/.test(model)) {
     body.thinking = { type: 'adaptive' };
-    body.output_config = { effort: 'low' };
+    // Переводу думать не над чем — там low экономит деньги и время.
+    // Ответу надо вникнуть в чужую мысль, и на low он выходит поверхностным.
+    body.output_config = { effort };
   }
   return body;
 }
 
 // Запрос к API. Один на все режимы: меняется только системный промпт.
-async function callApi({ cfg, system, text, fence, maxTokens, signal }) {
+async function callApi({ cfg, system, text, fence, maxTokens, signal, effort }) {
   return fetch(API_URL, {
     method: 'POST',
     signal,
@@ -220,7 +222,7 @@ async function callApi({ cfg, system, text, fence, maxTokens, signal }) {
       // Без этого заголовка API отклоняет запросы с origin браузера.
       'anthropic-dangerous-direct-browser-access': 'true'
     },
-    body: JSON.stringify(buildBody({ model: cfg.model, system, text, maxTokens, fence }))
+    body: JSON.stringify(buildBody({ model: cfg.model, system, text, maxTokens, fence, effort }))
   });
 }
 
@@ -444,7 +446,7 @@ export function composeReplyInput({ text, context }) {
 }
 
 /** Пишет варианты ответа на чужой текст. Возвращает всё, что напечатала модель. */
-export async function replyStream({ text, context, settings, maxTokens = 4000, signal, onDelta }) {
+export async function replyStream({ text, context, settings, maxTokens = 16000, signal, onDelta }) {
   const cfg = { ...DEFAULTS, ...settings };
   if (!cfg.apiKey) throw new TranslationError('Не задан ключ API.', 'nokey');
 
@@ -452,7 +454,8 @@ export async function replyStream({ text, context, settings, maxTokens = 4000, s
   const fence = makeFence(payload);
   const system = buildReplySystem({ persona: cfg.persona, fence, glossLang: cfg.native });
 
-  const res = await callApi({ cfg, system, text: payload, fence, maxTokens, signal });
+  // high — уровень по умолчанию у модели; на low ответы выходили не вникая.
+  const res = await callApi({ cfg, system, text: payload, fence, maxTokens, signal, effort: 'high' });
   if (!res.ok) throw await readError(res);
 
   return readStream(res, onDelta);

@@ -135,6 +135,66 @@
       .replace(/\n{3,}/g, '\n\n')
       .trim();
 
+  // Строки интерфейса, которые innerText приносит вместе с текстом: счётчики
+  // просмотров и лайков, «Показать больше», кнопки подписки. Модели это мусор.
+  const NOISE_LINE = /^(\d[\d\s.,]*[kKмМmM]?|show more|показать (ещё|больше)|quote|цитата|subscribe|подписаться|following|follow|читать|ad\?|реклама|promoted|boosted|relevant|views|просмотр\w*|replies|ответы|·|translate post|перевести пост)$/i;
+
+  function dropNoise(text) {
+    return text
+      .split('\n')
+      .filter((line) => {
+        const t = line.trim();
+        return t && !NOISE_LINE.test(t);
+      })
+      .join('\n')
+      .trim();
+  }
+
+  // У твита есть узел с чистым текстом — берём его, а не всё подряд.
+  function blockText(el) {
+    if (!el || !el.querySelector) return '';
+    const body = el.querySelector('[data-testid="tweetText"]');
+    if (body) {
+      const who = el.querySelector('[data-testid="User-Name"]');
+      const name = who
+        ? tidy(who.innerText).split('\n').filter(Boolean).slice(0, 2).join(' ')
+        : '';
+      const said = tidy(body.innerText);
+      return name ? name + ': ' + said : said;
+    }
+    return dropNoise(tidy(el.innerText || ''));
+  }
+
+  // Соседи по треду. previousElementSibling тут не работает: твит завёрнут
+  // в обёртки, и рядом с ним пусто. Поднимаемся до предка, внутри которого
+  // лежит больше одного поста, и берём те, что идут раньше нашего.
+  const POST_SEL = 'article, [role="article"]';
+
+  // В ленте посты выше — не разговор, а просто другие записи: подавать их как
+  // контекст значит врать модели. На X разговор виден только на странице твита.
+  function isThreadPage() {
+    if (/(^|.)(x|twitter).com$/i.test(location.hostname)) {
+      return //status/d+/.test(location.pathname);
+    }
+    return true;
+  }
+
+  function postsBefore(block) {
+    if (!isThreadPage()) return [];
+    if (!block || !block.matches || !block.matches(POST_SEL)) return [];
+    let anc = block;
+    let guard = 0;
+    while (anc && anc !== document.body && guard++ < 30) {
+      if (anc.querySelectorAll(POST_SEL).length > 1) break;
+      anc = anc.parentElement;
+    }
+    if (!anc || anc === document.body) return [];
+    const all = [...anc.querySelectorAll(POST_SEL)];
+    const mine = all.indexOf(block);
+    if (mine <= 0) return [];
+    return all.slice(Math.max(0, mine - 3), mine);
+  }
+
   // Ищем блок, который и есть «пост»: сначала по разметке, потом по объёму текста.
   function postBlock(node) {
     let el = node;
@@ -164,21 +224,19 @@
       const block = postBlock(node);
       if (!block) return out;
 
-      const post = tidy(block.innerText);
+      const post = blockText(block);
       // Если выделен и так весь пост, второй раз его слать незачем.
       if (post && post !== selected) out.post = post.slice(0, CTX_POST_MAX);
 
-      // Соседи сверху: в треде это разговор, который шёл до этого сообщения.
+      // Разговор, который шёл до этого сообщения.
       const near = [];
-      let prev = block.previousElementSibling;
       let budget = CTX_NEAR_MAX;
-      while (prev && near.length < 3 && budget > 0) {
-        const t = tidy(prev.innerText || '');
-        if (t.length > 20) {
-          near.unshift(t.slice(0, budget));
+      for (const prev of postsBefore(block)) {
+        const t = blockText(prev);
+        if (t.length > 20 && budget > 0) {
+          near.push(t.slice(0, budget));
           budget -= t.length;
         }
-        prev = prev.previousElementSibling;
       }
       out.near = near.join('\n---\n').slice(0, CTX_NEAR_MAX);
     } catch {
