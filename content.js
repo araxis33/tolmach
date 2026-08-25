@@ -189,8 +189,10 @@
   // В ленте посты выше — не разговор, а просто другие записи: подавать их как
   // контекст значит врать модели. На X разговор виден только на странице твита.
   function isThreadPage() {
-    if (/(^|.)(x|twitter).com$/i.test(location.hostname)) {
-      return //status/d+/.test(location.pathname);
+    if (/(^|\.)(x|twitter)\.com$/i.test(location.hostname)) {
+      // Обратные слэши здесь обязательны. Без них строка читается как комментарий,
+      // функция молча возвращает undefined, и разговор выше на X не доезжает вообще.
+      return /^\/[^\/]+\/status\/\d+/.test(location.pathname);
     }
     return true;
   }
