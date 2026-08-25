@@ -79,6 +79,23 @@ if (/fetch\(\s*API_URL/.test(sources['engine.js'])) {
     : bad('код ходит в api.anthropic.com, а host_permissions этого не разрешает');
 }
 
+// ——— регулярка, которая стала комментарием ————————————————————
+// Так уже ломалось однажды: в `return //status/d+/.test(path)` потерялись
+// обратные слэши, строка превратилась в комментарий, функция молча вернула
+// undefined — и разговор выше по треду перестал доезжать до модели.
+// Синтаксис при этом валиден, поэтому нужна отдельная проверка.
+const COMMENTED_REGEX = /(?:return|=>|[=(,])\s*\/\/\S/;
+let commented = 0;
+for (const [file, src] of Object.entries(sources)) {
+  src.split('\n').forEach((line, i) => {
+    if (COMMENTED_REGEX.test(line)) {
+      commented++;
+      bad(`${file}:${i + 1} — регулярка потеряла обратные слэши и стала комментарием`);
+    }
+  });
+}
+if (!commented) ok('ни одна регулярка не выродилась в комментарий');
+
 // ——— ключ не должен утекать в страницу ————————————————————————
 if (/apiKey/.test(sources['content.js'])) {
   bad('content.js упоминает apiKey — ключ не должен попадать на страницу');
