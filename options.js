@@ -134,8 +134,31 @@ async function paintLeft(spend) {
     ? ' — это примерно ' + Math.floor(left / perReply) + ' ' + plural(Math.floor(left / perReply), 'ответ', 'ответа', 'ответов')
     : '';
 
-  box.textContent = 'Осталось ' + formatCost(left) + tail + '. Потрачено с последнего пополнения: ' + formatCost(spent) + '.';
+  // На нуле счётчик молчать не должен, но и утверждать «денег нет» он не
+  // вправе: он вычитает из суммы, которую вписали руками, и не знает ни про
+  // налог, ни про траты тем же ключом в другом месте. Поэтому на нуле он
+  // говорит, чьи это подсчёты, и отправляет туда, где остаток настоящий.
+  if (left <= 0) {
+    box.textContent = 'По моим подсчётам деньги кончились: потрачено ' + formatCost(spent) +
+      ' из вписанных ' + formatCost(start) + '. Настоящий остаток — в консоли Anthropic: ';
+    box.append(consoleLink());
+    box.classList.add('warn');
+    return;
+  }
+
+  box.textContent = 'По моим подсчётам осталось ' + formatCost(left) + tail +
+    '. Потрачено с последнего пополнения: ' + formatCost(spent) + '.';
   box.classList.toggle('warn', left < start * 0.15);
+}
+
+// Одна ссылка на две строки выше: console.anthropic.com ведёт сюда же.
+function consoleLink() {
+  const a = document.createElement('a');
+  a.href = 'https://platform.claude.com/settings/billing';
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.textContent = 'platform.claude.com';
+  return a;
 }
 
 function plural(n, one, few, many) {
