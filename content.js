@@ -235,7 +235,11 @@
   function grabContext(selected) {
     const out = { page: '', near: '', post: '' };
     try {
-      out.page = tidy(document.title + ' — ' + location.href).slice(0, 300);
+      // На x.com document.title пуст (замерено 31.08 на живой странице): без
+      // проверки строка начиналась с висячего тире, и «где мы» превращалось
+      // в мусор. Заголовок подставляем только если он есть.
+      const pageTitle = tidy(document.title);
+      out.page = tidy(pageTitle ? pageTitle + ' — ' + location.href : location.href).slice(0, 300);
 
       const sel = window.getSelection();
       const node = sel && sel.rangeCount ? sel.getRangeAt(0).startContainer : null;

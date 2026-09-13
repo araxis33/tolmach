@@ -10,6 +10,7 @@ import {
   wrapSource,
   parseReplies,
   composeReplyInput,
+  buildReplySystem,
   priceOf,
   formatCost
 } from './engine.js';
@@ -217,6 +218,61 @@ check(
   "выделение, совпавшее со всем постом, не дублируется",
   (composeReplyInput({ text: "пост", context: { post: "" } }).match(/пост/g) || []).length,
   1
+);
+
+
+// ——— тон ответов ————————————————————————————————————————————————
+// Тон уезжал в критику дважды (25.08 и 31.08). Правила тона теперь проверяются
+// здесь, чтобы правка «на глаз» не сняла их молча в третий раз.
+const SYS = buildReplySystem({ persona: 'кто-то', fence: 'X1', glossLang: 'ru' });
+
+check(
+  'усиление автора — главное правило, а не «быть на его стороне»',
+  SYS.includes('MAKE THEIR POINT STRONGER'),
+  true
+);
+
+check(
+  'возражение прямо запрещено, а не «только когда действительно»',
+  SYS.includes('DO NOT ARGUE') && !SYS.includes('DISAGREE ONLY WHEN YOU REALLY DO'),
+  true
+);
+
+check(
+  'оговорка и риск названы как НЕ вклад',
+  ['the caveat', 'the risk', 'the exception', 'devil\'s-advocate']
+    .every((s) => SYS.includes(s)),
+  true
+);
+
+check(
+  'вариант «тот, кто спорит» объявлен несуществующим',
+  SYS.includes('the reply that pushes back does not exist here'),
+  true
+);
+
+check(
+  'искренняя радость разрешена, мотивационный плакат — нет',
+  SYS.includes('Being glad for someone is welcome') && SYS.includes('fit on a mug'),
+  true
+);
+
+check(
+  'самопроверка ловит ответ, уменьшающий исходный пост',
+  SYS.includes('makes the original look weaker'),
+  true
+);
+
+check(
+  'ограничение на вопросы никуда не делось',
+  SYS.includes('AT MOST ONE OF THE THREE MAY ASK ANYTHING'),
+  true
+);
+
+check(
+  'подколы по-прежнему запрещены',
+  SYS.includes('NO JABS, NO IRONY, NO TEASING'),
+  true
 );
 
 
