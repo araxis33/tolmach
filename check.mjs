@@ -79,6 +79,12 @@ if (/fetch\(\s*API_URL/.test(sources['engine.js'])) {
     : bad('код ходит в api.anthropic.com, а host_permissions этого не разрешает');
 }
 
+if (/generativelanguage\.googleapis\.com/.test(sources['engine.js'])) {
+  manifest.host_permissions?.some((h) => h.includes('generativelanguage.googleapis.com'))
+    ? ok('запросы к Gemini разрешены в host_permissions')
+    : bad('код ходит в generativelanguage.googleapis.com, а host_permissions этого не разрешает');
+}
+
 // ——— регулярка, которая стала комментарием ————————————————————
 // Так уже ломалось однажды: в `return //status/d+/.test(path)` потерялись
 // обратные слэши, строка превратилась в комментарий, функция молча вернула
@@ -97,12 +103,12 @@ for (const [file, src] of Object.entries(sources)) {
 if (!commented) ok('ни одна регулярка не выродилась в комментарий');
 
 // ——— ключ не должен утекать в страницу ————————————————————————
-if (/apiKey/.test(sources['content.js'])) {
-  bad('content.js упоминает apiKey — ключ не должен попадать на страницу');
+if (/apiKey|geminiKey/.test(sources['content.js'])) {
+  bad('content.js упоминает ключ — ключ не должен попадать на страницу');
 } else {
-  ok('content.js не видит ключ');
+  ok('content.js не видит ни ключ Anthropic, ни ключ Gemini');
 }
-if (/x-api-key/.test(sources['content.js'])) {
+if (/x-api-key|x-goog-api-key/.test(sources['content.js'])) {
   bad('content.js шлёт заголовок с ключом');
 } else {
   ok('ключ уходит только из service worker');

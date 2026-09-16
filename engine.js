@@ -1,10 +1,19 @@
-// Толмач — движок перевода поверх Claude Messages API.
-// Вызывается только из service worker: ключ никогда не попадает в страницу.
+// Толмач — движок перевода поверх двух моделей: Gemini (бесплатный ключ Google)
+// и Claude (платный ключ Anthropic). Вызывается только из service worker:
+// ключ никогда не попадает в страницу.
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 export const DEFAULTS = {
+  // Gemini по умолчанию: у Google есть бесплатная квота, у Anthropic — нет.
+  provider: 'gemini',
+  geminiKey: '',
+  // Модели по умолчанию — стабильные и долгоживущие. Настройки подбирают лучшие
+  // из тех, что реально доступны ключу, когда его проверяют.
+  geminiModel: 'gemini-2.5-flash-lite',
+  geminiReplyModel: 'gemini-2.5-flash',
   apiKey: '',
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
@@ -241,7 +250,220 @@ function buildBody({ model, system, text, maxTokens, fence, effort = 'low' }) {
   return body;
 }
 
-// Запрос к API. Один на все режимы: меняется только системный промпт.
+// ——— какой ключ и какая модель ——————————————————————————————————
+
+export function providerOf(cfg) {
+  return cfg.provider === 'claude' ? 'claude' : 'gemini';
+}
+
+/** Ключ выбранного провайдера или пустая строка. */
+export function activeKey(cfg) {
+  return providerOf(cfg) === 'claude' ? cfg.apiKey || '' : cfg.geminiKey || '';
+}
+
+/** Модель под задачу: ответы пишутся на своей, перевод и страница — на основной. */
+export function modelFor(cfg, purpose) {
+  if (providerOf(cfg) === 'claude') {
+    return purpose === 'reply' ? cfg.replyModel || cfg.model : cfg.model;
+  }
+  return purpose === 'reply'
+    ? cfg.geminiReplyModel || DEFAULTS.geminiReplyModel
+    : cfg.geminiModel || DEFAULTS.geminiModel;
+}
+
+function requireKey(cfg) {
+  if (activeKey(cfg)) return;
+  throw new TranslationError(
+    providerOf(cfg) === 'claude' ? 'Не задан ключ Anthropic.' : 'Не задан ключ Gemini.',
+    'nokey'
+  );
+}
+
+/**
+ * Один вход для всех режимов: перевод, ответ, страница. Возвращает напечатанный
+ * текст, расход токенов и модель, на которой всё было сделано.
+ */
+async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, effort, onDelta }) {
+  requireKey(cfg);
+  const model = modelFor(cfg, purpose);
+  if (providerOf(cfg) === 'gemini') {
+    const res = await callGemini({ key: cfg.geminiKey, model, system, text, fence, maxTokens, signal });
+    if (!res.ok) throw await readGeminiError(res);
+    const out = await readGeminiStream(res, onDelta);
+    return { ...out, model };
+  }
+  const res = await callApi({ cfg, system, text, fence, maxTokens, signal, effort, model });
+  if (!res.ok) throw await readError(res);
+  const out = await readStream(res, onDelta);
+  return { ...out, model };
+}
+
+// ——— Gemini ————————————————————————————————————————————————————
+
+export function buildGeminiBody({ system, text, fence, maxTokens }) {
+  return {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: 'user', parts: [{ text: wrapSource(text, fence) }] }],
+    // Размышления модели Gemini тоже идут в этот предел — берём с запасом,
+    // иначе длинный ответ обрывается на полуслове.
+    generationConfig: { maxOutputTokens: maxTokens }
+  };
+}
+
+async function callGemini({ key, model, system, text, fence, maxTokens, signal }) {
+  const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+  return fetch(url, {
+    method: 'POST',
+    signal,
+    // Ключ в заголовке, а не в адресе: адреса оседают в журналах.
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify(buildGeminiBody({ system, text, fence, maxTokens }))
+  });
+}
+
+/**
+ * Разбирает один кусок потока Gemini. Мысли модели (thought: true) не
+ * показываем — только видимый текст. Расход приходит нарастающим итогом.
+ */
+export function parseGeminiChunk(ev) {
+  const cand = (ev && ev.candidates && ev.candidates[0]) || null;
+  const parts = (cand && cand.content && cand.content.parts) || [];
+  const text = parts
+    .filter((p) => typeof p.text === 'string' && !p.thought)
+    .map((p) => p.text)
+    .join('');
+  const u = ev && ev.usageMetadata;
+  const usage = u
+    ? {
+        input: u.promptTokenCount || 0,
+        // Размышления оплачиваются как выход, поэтому считаются вместе с ним.
+        output: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0),
+        cacheRead: u.cachedContentTokenCount || 0,
+        cacheWrite: 0
+      }
+    : null;
+  const blocked = (ev && ev.promptFeedback && ev.promptFeedback.blockReason) || '';
+  const finish = (cand && cand.finishReason) || '';
+  return { text, usage, blocked, finish };
+}
+
+async function readGeminiStream(res, onDelta) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+  let usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let stopped = '';
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload) continue;
+      let ev;
+      try {
+        ev = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (ev.error) throw geminiErrorFrom(0, ev.error);
+      const chunk = parseGeminiChunk(ev);
+      if (chunk.usage) usage = chunk.usage;
+      if (chunk.blocked) stopped = chunk.blocked;
+      if (chunk.finish && chunk.finish !== 'STOP' && chunk.finish !== 'MAX_TOKENS') stopped = chunk.finish;
+      if (chunk.text) {
+        full += chunk.text;
+        if (onDelta) onDelta(chunk.text, full);
+      }
+    }
+  }
+
+  if (!full.trim()) {
+    throw new TranslationError(
+      stopped ? `Gemini отказался отвечать (${stopped}). Попробуй другой текст.` : 'Пустой ответ от модели.',
+      'empty'
+    );
+  }
+  return { text: full, usage };
+}
+
+// Ошибки Google приходят как {error: {code, status, message}}.
+export function geminiErrorFrom(httpStatus, error) {
+  const status = (error && error.status) || '';
+  const message = (error && error.message) || '';
+  const code = httpStatus || (error && error.code) || 0;
+  if (/API key not valid|API_KEY_INVALID/i.test(message) || code === 401 || status === 'UNAUTHENTICATED') {
+    return new TranslationError('Ключ Gemini не принят. Проверь его в настройках Толмача.', 'auth');
+  }
+  if (code === 403 || status === 'PERMISSION_DENIED') {
+    return new TranslationError('Google не пускает этот ключ к модели. Проверь ключ в настройках.', 'auth');
+  }
+  if (code === 429 || status === 'RESOURCE_EXHAUSTED') {
+    return new TranslationError(
+      'Лимит бесплатного Gemini на сейчас исчерпан. Подожди минуту или выбери в настройках модель полегче.',
+      'rate'
+    );
+  }
+  if (code === 404 || status === 'NOT_FOUND') {
+    return new TranslationError('Этой модели Gemini больше нет. Нажми «Проверить» в настройках — Толмач подберёт новую.', 'model');
+  }
+  if (code >= 500 || status === 'UNAVAILABLE' || status === 'INTERNAL') {
+    return new TranslationError('Gemini сейчас не отвечает. Попробуй ещё раз.', 'server');
+  }
+  return new TranslationError(message || `Ошибка ${code}`, 'api');
+}
+
+async function readGeminiError(res) {
+  let error = null;
+  try {
+    const body = await res.json();
+    error = Array.isArray(body) ? body[0] && body[0].error : body && body.error;
+  } catch {
+    // тело не JSON — обойдёмся статусом
+  }
+  return geminiErrorFrom(res.status, error);
+}
+
+/**
+ * Из списка моделей ключа выбирает, чем переводить и чем отвечать: самую свежую
+ * стабильную Flash-Lite для перевода и самую свежую стабильную Flash для
+ * ответов. Превью, экспериментальные, озвучка и картинки не годятся — они
+ * пропадают без предупреждения или не пишут текст.
+ */
+export function pickGeminiModels(ids) {
+  const usable = ids
+    .map((id) => String(id).replace(/^models\//, ''))
+    .filter((id) => /^gemini-\d+(\.\d+)?-flash(-lite)?$/.test(id));
+  const version = (id) => parseFloat(id.match(/^gemini-(\d+(?:\.\d+)?)/)[1]);
+  const newest = (list) => list.sort((a, b) => version(b) - version(a))[0] || '';
+  const lite = newest(usable.filter((id) => id.endsWith('-lite')));
+  const flash = newest(usable.filter((id) => !id.endsWith('-lite')));
+  return {
+    translate: lite || flash || DEFAULTS.geminiModel,
+    reply: flash || lite || DEFAULTS.geminiReplyModel,
+    available: usable.sort((a, b) => version(b) - version(a) || a.localeCompare(b))
+  };
+}
+
+/** Модели, которые видит ключ. Заодно это и проверка ключа. */
+export async function listGeminiModels(key, signal) {
+  const res = await fetch(`${GEMINI_BASE}/models?pageSize=200`, {
+    signal,
+    headers: { 'x-goog-api-key': key }
+  });
+  if (!res.ok) throw await readGeminiError(res);
+  const body = await res.json();
+  return (body.models || [])
+    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map((m) => m.name);
+}
+
+// Запрос к API Anthropic. Один на все режимы: меняется только системный промпт.
 async function callApi({ cfg, system, text, fence, maxTokens, signal, effort, model }) {
   return fetch(API_URL, {
     method: 'POST',
@@ -354,7 +576,7 @@ export async function translateStream({
   onDelta
 }) {
   const cfg = { ...DEFAULTS, ...settings };
-  if (!cfg.apiKey) throw new TranslationError('Не задан ключ API.', 'nokey');
+  requireKey(cfg);
 
   const dir = targetOverride
     ? { to: targetOverride, from: targetOverride === cfg.native ? cfg.foreign : cfg.native }
@@ -371,11 +593,10 @@ export async function translateStream({
     fence
   });
 
-  const res = await callApi({ cfg, system, text, fence, maxTokens, signal });
-  if (!res.ok) throw await readError(res);
-
-  const { text: full, usage } = await readStream(res, onDelta);
-  return { raw: full, usage, model: cfg.model, ...dir };
+  const { text: full, usage, model } = await runModel({
+    cfg, purpose: 'translate', system, text, fence, maxTokens, signal, onDelta
+  });
+  return { raw: full, usage, model, ...dir };
 }
 
 // ——— пакетный перевод страницы —————————————————————————————————
@@ -495,19 +716,17 @@ export function composeReplyInput({ text, context }) {
 /** Пишет варианты ответа на чужой текст. Возвращает всё, что напечатала модель. */
 export async function replyStream({ text, context, settings, maxTokens = 16000, signal, onDelta }) {
   const cfg = { ...DEFAULTS, ...settings };
-  if (!cfg.apiKey) throw new TranslationError('Не задан ключ API.', 'nokey');
+  requireKey(cfg);
 
   const payload = composeReplyInput({ text, context });
   const fence = makeFence(payload);
   const system = buildReplySystem({ persona: cfg.persona, fence, glossLang: cfg.native });
 
-  // Ответы держим на своей модели: их пишут пачками, и Sonnet тут дешевле вдвое.
-  const model = cfg.replyModel || cfg.model;
-  // high — уровень по умолчанию у модели; на low ответы выходили не вникая.
-  const res = await callApi({ cfg, system, text: payload, fence, maxTokens, signal, effort: 'high', model });
-  if (!res.ok) throw await readError(res);
-
-  const { text: written, usage } = await readStream(res, onDelta);
+  // Ответы держим на своей модели (modelFor): их пишут пачками, и им нужно
+  // вникать. На Claude — effort high: на low ответы выходили не вникая.
+  const { text: written, usage, model } = await runModel({
+    cfg, purpose: 'reply', system, text: payload, fence, maxTokens, signal, effort: 'high', onDelta
+  });
   return { raw: written, usage, model };
 }
 
@@ -564,17 +783,16 @@ function buildSegmentSystem({ to, from, glossary, fence }) {
 /** Переводит пачку кусков. Возвращает Map индекс → перевод и расход токенов. */
 export async function translateSegments({ segments, settings, to, from, signal }) {
   const cfg = { ...DEFAULTS, ...settings };
-  if (!cfg.apiKey) throw new TranslationError('Не задан ключ API.', 'nokey');
+  requireKey(cfg);
 
   const packed = packSegments(segments);
   const fence = makeFence(packed);
   const system = buildSegmentSystem({ to, from, glossary: cfg.glossary, fence });
 
-  const res = await callApi({ cfg, system, text: packed, fence, maxTokens: 32000, signal });
-  if (!res.ok) throw await readError(res);
-
-  const { text: full, usage } = await readStream(res);
-  return { map: unpackSegments(full, segments.length), usage, model: cfg.model };
+  const { text: full, usage, model } = await runModel({
+    cfg, purpose: 'page', system, text: packed, fence, maxTokens: 32000, signal
+  });
+  return { map: unpackSegments(full, segments.length), usage, model };
 }
 
 export { LANG_NAMES };

@@ -8,6 +8,10 @@ import {
   replyStream,
   priceOf,
   pickDirection,
+  modelFor,
+  providerOf,
+  listGeminiModels,
+  pickGeminiModels,
   TranslationError
 } from './engine.js';
 
@@ -133,6 +137,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     chrome.runtime.openOptionsPage();
     sendResponse?.({ ok: true });
   }
+  // Настройки проверяют ключ Gemini списком моделей: видно и то, что ключ
+  // принят, и какие модели ему доступны. Лучшие сразу сохраняются.
+  if (msg?.type === 'gemini-models') {
+    (async () => {
+      try {
+        const ids = await listGeminiModels(msg.key);
+        const picked = pickGeminiModels(ids);
+        await chrome.storage.local.set({
+          geminiKey: msg.key,
+          geminiModel: picked.translate,
+          geminiReplyModel: picked.reply
+        });
+        sendResponse({ ok: true, ...picked });
+      } catch (err) {
+        sendResponse({ ok: false, message: describeError(err) });
+      }
+    })();
+    return true; // ответ придёт позже
+  }
   return false;
 });
 
@@ -183,7 +206,7 @@ chrome.runtime.onConnect.addListener((port) => {
 function describeError(err) {
   if (err instanceof TranslationError) return err.message;
   if (err?.name === 'TypeError') {
-    return 'Не удалось достучаться до Anthropic — проверь интернет.';
+    return 'Не удалось достучаться до модели — проверь интернет.';
   }
   return err?.message || 'Что-то пошло не так.';
 }
@@ -199,7 +222,7 @@ async function handleTranslate(req, post, signal) {
   const dir = req.targetOverride
     ? { to: req.targetOverride, from: '' }
     : pickDirection(text, settings);
-  post({ type: 'start', to: dir.to, from: dir.from, model: settings.model });
+  post({ type: 'start', to: dir.to, from: dir.from, model: modelFor(settings, 'translate') });
 
   const result = await translateStream({
     text,

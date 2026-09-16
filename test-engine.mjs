@@ -12,7 +12,15 @@ import {
   composeReplyInput,
   buildReplySystem,
   priceOf,
-  formatCost
+  formatCost,
+  DEFAULTS,
+  providerOf,
+  activeKey,
+  modelFor,
+  buildGeminiBody,
+  parseGeminiChunk,
+  geminiErrorFrom,
+  pickGeminiModels
 } from './engine.js';
 
 let failed = 0;
@@ -315,6 +323,64 @@ check('совсем мелкие не схлопываются в ноль', for
 check('крупные — два знака', formatCost(12.3456), '12,35 $');
 check('ноль остаётся нулём', formatCost(0), '0 $');
 check('везде доллары, центов больше нет', formatCost(0.5).includes('¢'), false);
+
+// ——— Gemini ————————————————————————————————————————————————————
+// 16.09.2026: Толмач стоял без денег на счету Anthropic. Бесплатный ключ Gemini
+// стал основным, Claude — по желанию.
+
+check('по умолчанию Gemini — у него есть бесплатная квота', providerOf(DEFAULTS), 'gemini');
+check('старые настройки с одним ключом Anthropic уходят на Gemini', providerOf({ apiKey: 'sk-ant-x' }), 'gemini');
+check('Claude — только если выбран явно', providerOf({ provider: 'claude' }), 'claude');
+check('ключ берётся у выбранного провайдера', activeKey({ provider: 'gemini', apiKey: 'sk-ant', geminiKey: 'AIza' }), 'AIza');
+check('ключ Anthropic не подменяет пустой ключ Gemini', activeKey({ provider: 'gemini', apiKey: 'sk-ant', geminiKey: '' }), '');
+check('перевод на Gemini — на основной модели', modelFor({ ...DEFAULTS, geminiModel: 'gemini-9-flash-lite' }, 'translate'), 'gemini-9-flash-lite');
+check('ответ на Gemini — на модели для ответов', modelFor({ ...DEFAULTS, geminiReplyModel: 'gemini-9-flash' }, 'reply'), 'gemini-9-flash');
+check('страница на Gemini — на основной модели', modelFor(DEFAULTS, 'page'), DEFAULTS.geminiModel);
+check('ответ на Claude — на модели для ответов', modelFor({ ...DEFAULTS, provider: 'claude' }, 'reply'), DEFAULTS.replyModel);
+check('пустая модель Gemini в настройках не ломает запрос', modelFor({ provider: 'gemini', geminiModel: '' }, 'translate'), DEFAULTS.geminiModel);
+
+{
+  const body = buildGeminiBody({ system: 'SYS', text: 'hello', fence: 'tolmach_x', maxTokens: 777 });
+  check('системный промпт уходит в systemInstruction', body.systemInstruction.parts[0].text, 'SYS');
+  check('текст уходит обёрнутым, как у Claude', body.contents[0].parts[0].text.includes('<tolmach_x>'), true);
+  check('предел длины передаётся', body.generationConfig.maxOutputTokens, 777);
+}
+
+check(
+  'мысли модели не попадают в перевод',
+  parseGeminiChunk({ candidates: [{ content: { parts: [{ text: 'думаю…', thought: true }, { text: 'Привет' }] } }] }).text,
+  'Привет'
+);
+check(
+  'размышления считаются как выход',
+  parseGeminiChunk({ usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, thoughtsTokenCount: 7 } }).usage,
+  { input: 10, output: 12, cacheRead: 0, cacheWrite: 0 }
+);
+check('кусок без расхода не обнуляет расход', parseGeminiChunk({ candidates: [] }).usage, null);
+check('блокировка запроса видна', parseGeminiChunk({ promptFeedback: { blockReason: 'SAFETY' } }).blocked, 'SAFETY');
+
+check('неверный ключ — это ошибка ключа', geminiErrorFrom(400, { status: 'INVALID_ARGUMENT', message: 'API key not valid. Please pass a valid API key.' }).kind, 'auth');
+check('кончился лимит — это не ошибка ключа', geminiErrorFrom(429, { status: 'RESOURCE_EXHAUSTED', message: 'Quota exceeded' }).kind, 'rate');
+check('модели не стало — советуем проверку', geminiErrorFrom(404, { status: 'NOT_FOUND', message: 'models/x is not found' }).kind, 'model');
+check('сбой Google — это сбой сервера', geminiErrorFrom(503, { status: 'UNAVAILABLE' }).kind, 'server');
+check('ошибка внутри потока без HTTP-кода тоже разбирается', geminiErrorFrom(0, { code: 429, status: 'RESOURCE_EXHAUSTED' }).kind, 'rate');
+
+{
+  const picked = pickGeminiModels([
+    'models/gemini-2.5-flash',
+    'models/gemini-2.5-flash-lite',
+    'models/gemini-3.5-flash-lite',
+    'models/gemini-3.6-flash',
+    'models/gemini-3-flash-preview',
+    'models/gemini-2.5-flash-preview-tts',
+    'models/gemini-2.5-pro',
+    'models/gemini-embedding-001'
+  ]);
+  check('перевод — на самой свежей стабильной Flash-Lite', picked.translate, 'gemini-3.5-flash-lite');
+  check('ответы — на самой свежей стабильной Flash', picked.reply, 'gemini-3.6-flash');
+  check('превью, озвучка, Pro и эмбеддинги в выбор не попадают', picked.available, ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']);
+  check('если ключу не видно ни одной подходящей — остаются умолчания', pickGeminiModels(['models/gemini-embedding-001']).translate, DEFAULTS.geminiModel);
+}
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);
