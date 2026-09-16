@@ -20,7 +20,9 @@ import {
   buildGeminiBody,
   parseGeminiChunk,
   geminiErrorFrom,
-  pickGeminiModels
+  pickGeminiModels,
+  geminiAttempts,
+  replyStream
 } from './engine.js';
 
 let failed = 0;
@@ -380,6 +382,39 @@ check('ошибка внутри потока без HTTP-кода тоже ра
   check('ответы — на самой свежей стабильной Flash', picked.reply, 'gemini-3.6-flash');
   check('превью, озвучка, Pro и эмбеддинги в выбор не попадают', picked.available, ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']);
   check('если ключу не видно ни одной подходящей — остаются умолчания', pickGeminiModels(['models/gemini-embedding-001']).translate, DEFAULTS.geminiModel);
+}
+
+// ——— ответ не падает, когда Flash перегружена ——————————————————————
+{
+  const g = { provider: 'gemini', geminiKey: 'k', geminiModel: 'lite-m', geminiReplyModel: 'flash-m' };
+  check('попытки: Flash дважды, потом модель перевода', geminiAttempts(g, 'flash-m'), ['flash-m', 'flash-m', 'lite-m']);
+  check('перевод без лишнего третьего круга на ту же модель', geminiAttempts(g, 'lite-m'), ['lite-m', 'lite-m']);
+
+  const sse = (text) =>
+    new Response(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] })}\n\n`, { status: 200 });
+  const busy = () => new Response(JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'The model is overloaded.' } }), { status: 503 });
+  const realFetch = globalThis.fetch;
+  const asked = [];
+
+  globalThis.fetch = async (url) => {
+    const model = decodeURIComponent(String(url).match(/models\/([^:]+):/)[1]);
+    asked.push(model);
+    return model === 'flash-m' ? busy() : sse('ok reply');
+  };
+  const out = await replyStream({ text: 'gm builders', context: {}, settings: g });
+  check('перегруженная Flash → ответ пишет Flash-Lite', [out.raw, out.model], ['ok reply', 'lite-m']);
+  check('перед переходом Flash спрошена дважды', asked, ['flash-m', 'flash-m', 'lite-m']);
+
+  globalThis.fetch = async () => busy();
+  let err = null;
+  try {
+    await replyStream({ text: 'gm builders', context: {}, settings: g });
+  } catch (e) {
+    err = e;
+  }
+  check('если лежат обе — видно, что сказал Google', /overloaded/.test(err && err.message), true);
+
+  globalThis.fetch = realFetch;
 }
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');

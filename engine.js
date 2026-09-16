@@ -288,10 +288,7 @@ async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, 
   requireKey(cfg);
   const model = modelFor(cfg, purpose);
   if (providerOf(cfg) === 'gemini') {
-    const res = await callGemini({ key: cfg.geminiKey, model, system, text, fence, maxTokens, signal });
-    if (!res.ok) throw await readGeminiError(res);
-    const out = await readGeminiStream(res, onDelta);
-    return { ...out, model };
+    return runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta });
   }
   const res = await callApi({ cfg, system, text, fence, maxTokens, signal, effort, model });
   if (!res.ok) throw await readError(res);
@@ -300,6 +297,53 @@ async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, 
 }
 
 // ——— Gemini ————————————————————————————————————————————————————
+
+/**
+ * Порядок попыток: выбранная модель дважды, потом модель перевода. Бесплатная
+ * Flash часто отвечает 503 «перегружена», когда Flash-Lite работает, и
+ * человек видел «Gemini не отвечает» на каждый ответ при живом переводе.
+ */
+export function geminiAttempts(cfg, model) {
+  const lighter = modelFor(cfg, 'translate');
+  const list = [model, model];
+  if (lighter && lighter !== model) list.push(lighter);
+  return list;
+}
+
+const RETRYABLE = new Set(['server', 'rate', 'model']);
+const pause = (ms, signal) =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(t);
+      resolve();
+    });
+  });
+
+async function runGemini({ cfg, model, system, text, fence, maxTokens, signal, onDelta }) {
+  const attempts = geminiAttempts(cfg, model);
+  let lastError = null;
+  for (let i = 0; i < attempts.length; i++) {
+    const current = attempts[i];
+    // Повторять можно, только пока на экран ничего не ушло: иначе текст задвоится.
+    let printed = false;
+    const relay = (piece, full) => {
+      printed = true;
+      if (onDelta) onDelta(piece, full);
+    };
+    try {
+      const res = await callGemini({ key: cfg.geminiKey, model: current, system, text, fence, maxTokens, signal });
+      if (!res.ok) throw await readGeminiError(res);
+      const out = await readGeminiStream(res, relay);
+      return { ...out, model: current };
+    } catch (err) {
+      if (signal?.aborted || printed || !(err instanceof TranslationError) || !RETRYABLE.has(err.kind)) throw err;
+      lastError = err;
+      if (i < attempts.length - 1) await pause(i === 0 ? 800 : 300, signal);
+    }
+  }
+  throw lastError;
+}
 
 export function buildGeminiBody({ system, text, fence, maxTokens }) {
   return {
@@ -414,7 +458,9 @@ export function geminiErrorFrom(httpStatus, error) {
     return new TranslationError('Этой модели Gemini больше нет. Нажми «Проверить» в настройках — Толмач подберёт новую.', 'model');
   }
   if (code >= 500 || status === 'UNAVAILABLE' || status === 'INTERNAL') {
-    return new TranslationError('Gemini сейчас не отвечает. Попробуй ещё раз.', 'server');
+    // Текст Google показываем: «перегружена» и «внутренняя ошибка» лечатся по-разному.
+    const said = message ? ` Google: «${message.slice(0, 160)}»` : '';
+    return new TranslationError(`Gemini сейчас не отвечает (${code || status}).${said}`, 'server');
   }
   return new TranslationError(message || `Ошибка ${code}`, 'api');
 }
