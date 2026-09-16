@@ -13,9 +13,57 @@
   </header>
 
   <section class="card">
+    <h2>Чем переводить</h2>
+    <p class="help">
+      Gemini от Google работает бесплатно, в пределах дневного лимита. Claude от Anthropic
+      пишет чуть живее, но платно: за каждый запрос со счёта, который пополняешь сам.
+    </p>
+    <div class="grid">
+      <label>
+        <span>Модель</span>
+        <select id="provider">
+          <option value="gemini">Gemini — бесплатно</option>
+          <option value="claude">Claude — платно, ключ Anthropic</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section class="card" id="geminiCard">
+    <h2>Ключ Gemini</h2>
+    <p class="help">
+      Бесплатный. Открой
+      <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">aistudio.google.com</a>,
+      нажми <b>Create API key</b>, скопируй ключ и вставь сюда. Он хранится только в этом
+      браузере и уходит напрямую в Google — больше никуда.
+    </p>
+    <div class="row">
+      <input type="password" id="geminiKey" placeholder="AIza…" autocomplete="off" spellcheck="false">
+      <button class="ghost" id="geminiReveal" title="Показать ключ">Показать</button>
+      <button class="primary" id="geminiTest">Проверить</button>
+    </div>
+    <div class="status hidden" id="geminiStatus"></div>
+    <div class="grid">
+      <label>
+        <span>Модель для перевода</span>
+        <select id="geminiModel"></select>
+      </label>
+      <label>
+        <span>Модель для ответов</span>
+        <select id="geminiReplyModel"></select>
+      </label>
+    </div>
+    <p class="help">
+      «Проверить» сам выберет самые свежие модели, доступные ключу. Flash-Lite быстрее
+      и с большим дневным лимитом, Flash вдумчивее. Упёрся в лимит — поставь Flash-Lite
+      и для ответов. Сколько осталось на сегодня, Google показывает в AI Studio.
+    </p>
+  </section>
+
+  <section class="card hidden" id="claudeCard">
     <h2>Ключ Anthropic</h2>
     <p class="help">
-      Без него переводить нечем. Заведи ключ на
+      Заведи ключ на
       <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com</a>,
       пополни счёт на любую сумму и вставь ключ сюда. Он хранится только в этом браузере
       и уходит напрямую в Anthropic — больше никуда.
@@ -26,6 +74,17 @@
       <button class="primary" id="test">Проверить</button>
     </div>
     <div class="status hidden" id="status"></div>
+    <div class="grid">
+      <label>
+        <span>Модель для перевода</span>
+        <select id="model"></select>
+      </label>
+      <label>
+        <span>Модель для ответов</span>
+        <select id="replyModel"></select>
+      </label>
+    </div>
+    <p class="help" id="modelNote"></p>
   </section>
 
   <section class="card">
@@ -53,16 +112,7 @@
         <span>Тон по умолчанию</span>
         <select id="tone"></select>
       </label>
-      <label>
-        <span>Модель для перевода</span>
-        <select id="model"></select>
-      </label>
-      <label>
-        <span>Модель для ответов</span>
-        <select id="replyModel"></select>
-      </label>
     </div>
-    <p class="help" id="modelNote"></p>
     <label class="check">
       <input type="checkbox" id="showAlt">
       <span>Показывать второй вариант перевода</span>
@@ -71,9 +121,13 @@
       <input type="checkbox" id="showBubble">
       <span>Показывать кнопку рядом с выделенным текстом</span>
     </label>
+    <label class="check">
+      <input type="checkbox" id="showTweetButton">
+      <span>Кнопка «Ответить» под каждым постом в X — три варианта с переводом</span>
+    </label>
   </section>
 
-  <section class="card">
+  <section class="card hidden" id="moneyCard">
     <h2>Деньги</h2>
     <p class="help">
       Сколько долларов ты положил на счёт Anthropic. Остаток API наружу не отдаёт,
@@ -127,6 +181,7 @@
       <li><kbd>Alt</kbd>+<kbd>P</kbd> — перевести страницу целиком (нажать ещё раз — вернуть оригинал)</li>
       <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> — перевести заново в окне расширения</li>
       <li>Кнопка <strong>«Ответить»</strong> в карточке — три варианта ответа на выделенный текст</li>
+      <li>Зелёная кнопка в ряду действий поста X — то же самое, плюс «Вставить в ответ»</li>
     </ul>
     <p class="help">
       Сочетания можно поменять на странице

@@ -1,4 +1,4 @@
-import { DEFAULTS, MODELS, TONES, LANGS, formatCost } from './engine.js';
+import { DEFAULTS, MODELS, TONES, LANGS, formatCost, pickGeminiModels } from './engine.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,6 +33,11 @@ const PERSONA_DRAFT = [
 const status = $('status');
 
 const FIELDS = {
+  provider: { el: () => $('provider'), prop: 'value' },
+  geminiKey: { el: () => $('geminiKey'), prop: 'value' },
+  geminiModel: { el: () => $('geminiModel'), prop: 'value' },
+  geminiReplyModel: { el: () => $('geminiReplyModel'), prop: 'value' },
+  showTweetButton: { el: () => $('showTweetButton'), prop: 'checked' },
   apiKey: { el: () => $('apiKey'), prop: 'value' },
   native: { el: () => $('native'), prop: 'value' },
   foreign: { el: () => $('foreign'), prop: 'value' },
@@ -61,6 +66,12 @@ async function init() {
   const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));
   const settings = { ...DEFAULTS, ...stored };
 
+  // До проверки ключа список моделей неизвестен: показываем то, что уже выбрано,
+  // плюс стабильные умолчания. «Проверить» заменит список настоящим.
+  fillGeminiModels(
+    pickGeminiModels([settings.geminiModel, settings.geminiReplyModel, DEFAULTS.geminiModel, DEFAULTS.geminiReplyModel]).available
+  );
+
   for (const [key, field] of Object.entries(FIELDS)) {
     field.el()[field.prop] = settings[key];
     field.el().addEventListener('change', () => save(key));
@@ -78,6 +89,16 @@ async function init() {
   });
 
   $('test').addEventListener('click', testKey);
+
+  paintProvider();
+  $('provider').addEventListener('change', paintProvider);
+  $('geminiReveal').addEventListener('click', () => {
+    const box = $('geminiKey');
+    const hidden = box.type === 'password';
+    box.type = hidden ? 'text' : 'password';
+    $('geminiReveal').textContent = hidden ? 'Скрыть' : 'Показать';
+  });
+  $('geminiTest').addEventListener('click', testGemini);
 
   await paintSpend();
   $('balance').addEventListener('input', () => setTimeout(paintSpend, 250));
@@ -295,6 +316,90 @@ function save(key) {
   }, 1500);
 }
 
+// ——— провайдер ————————————————————————————————————————————————————
+// Разделы Claude, включая деньги, на Gemini не нужны: платить там не за что.
+function paintProvider() {
+  const claude = $('provider').value === 'claude';
+  $('claudeCard').classList.toggle('hidden', !claude);
+  $('moneyCard').classList.toggle('hidden', !claude);
+  $('geminiCard').classList.toggle('hidden', claude);
+}
+
+function fillGeminiModels(ids) {
+  for (const id of ['geminiModel', 'geminiReplyModel']) {
+    const select = $(id);
+    const current = select.value;
+    fillSelect(select, ids.map((m) => [m, m.replace(/^gemini-/, 'Gemini ').replace(/-flash-lite$/, ' Flash-Lite').replace(/-flash$/, ' Flash')]));
+    if (current && ids.includes(current)) select.value = current;
+  }
+}
+
+// Проверка ключа Gemini в два шага: список моделей (ключ принят, что доступно)
+// и настоящий короткий перевод (выбранная модель правда отвечает).
+async function testGemini() {
+  const key = $('geminiKey').value.trim();
+  if (!key) {
+    setGeminiStatus('Сначала вставь ключ.', 'bad');
+    return;
+  }
+  $('geminiTest').disabled = true;
+  setGeminiStatus('Проверяю ключ…', '');
+
+  const listed = await chrome.runtime.sendMessage({ type: 'gemini-models', key }).catch(() => null);
+  if (!listed || !listed.ok) {
+    $('geminiTest').disabled = false;
+    setGeminiStatus(listed ? listed.message : 'Связь с расширением оборвалась. Попробуй ещё раз.', 'bad');
+    return;
+  }
+
+  fillGeminiModels(listed.available);
+  $('geminiModel').value = listed.translate;
+  $('geminiReplyModel').value = listed.reply;
+  $('provider').value = 'gemini';
+  await chrome.storage.local.set({ provider: 'gemini' });
+  paintProvider();
+
+  setGeminiStatus('Ключ принят. Пробую перевести…', '');
+  translateProbe((text, kind) => {
+    $('geminiTest').disabled = false;
+    setGeminiStatus(
+      kind === 'ok'
+        ? `${text} Перевод — ${listed.translate}, ответы — ${listed.reply}.`
+        : text,
+      kind
+    );
+  });
+}
+
+function setGeminiStatus(text, kind) {
+  const box = $('geminiStatus');
+  box.textContent = text;
+  box.className = `status ${kind}`;
+  box.classList.remove('hidden');
+}
+
+// Короткий настоящий перевод через тот же путь, что у карточки на странице.
+function translateProbe(done) {
+  const port = chrome.runtime.connect({ name: 'tolmach' });
+  let answered = false;
+  const finish = (text, kind) => {
+    if (answered) return;
+    answered = true;
+    port.disconnect();
+    done(text, kind);
+  };
+  port.onMessage.addListener((msg) => {
+    if (msg.type === 'done') {
+      const sample = msg.raw.split('@@')[0].trim().split('\n')[0];
+      finish(`Работает. «Сегодня хорошая погода» → «${sample}».`, 'ok');
+    } else if (msg.type === 'error') {
+      finish(msg.message, 'bad');
+    }
+  });
+  port.onDisconnect.addListener(() => finish('Связь оборвалась. Попробуй ещё раз.', 'bad'));
+  port.postMessage({ type: 'translate', text: 'Сегодня хорошая погода', tone: 'natural', targetOverride: $('foreign').value });
+}
+
 // Проверяем ключ настоящим коротким переводом — так видно и то, что ключ
 // принят, и то, что на счету есть деньги.
 async function testKey() {
@@ -303,7 +408,8 @@ async function testKey() {
     setStatus('Сначала вставь ключ.', 'bad');
     return;
   }
-  await chrome.storage.local.set({ apiKey: key });
+  // Проверяется ключ Anthropic — значит, и переводить сейчас надо через Claude.
+  await chrome.storage.local.set({ apiKey: key, provider: 'claude' });
 
   $('test').disabled = true;
   setStatus('Проверяю…', '');
