@@ -22,10 +22,20 @@
     { id: 'formal', label: 'Официально' }
   ];
 
-  let settings = { showBubble: true };
-  chrome.storage.local.get(['showBubble']).then((s) => Object.assign(settings, s)).catch(() => {});
+  let settings = { showBubble: true, showTweetButton: true };
+  chrome.storage.local
+    .get(['showBubble', 'showTweetButton'])
+    .then((s) => {
+      Object.assign(settings, s);
+      syncTweetButtons();
+    })
+    .catch(() => {});
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.showBubble) settings.showBubble = changes.showBubble.newValue;
+    if (changes.showTweetButton) {
+      settings.showTweetButton = changes.showTweetButton.newValue;
+      syncTweetButtons();
+    }
   });
 
   // ——— оболочка ————————————————————————————————————————————————
@@ -412,6 +422,15 @@
       box.append(el('div', 'tm-reply-text', item.text));
       if (item.gloss) box.append(el('div', 'tm-reply-gloss', item.gloss));
 
+      // Карточка открыта кнопкой под постом X — вариант можно сразу положить
+      // в поле ответа. Отправляет человек, не расширение.
+      const tweet = current.tweet;
+      if (tweet) {
+        const put = el('button', 'tm-reply-copy tm-reply-put', 'Вставить в ответ');
+        put.addEventListener('click', () => insertIntoReply(tweet, item.text, put));
+        box.append(put);
+      }
+
       const take = el('button', 'tm-reply-copy', 'Копировать');
       take.addEventListener('click', () => {
         navigator.clipboard.writeText(item.text).then(
@@ -566,6 +585,149 @@
     });
 
     port.postMessage({ type: 'reply', text, context: current.context });
+  }
+
+  // ——— кнопка «Ответить» под постами X ——————————————————————————————
+  // Выделять текст ради ответа неудобно: на X это делается на каждом посте.
+  // Кнопка стоит в ряду действий поста и открывает ту же карточку с тремя
+  // вариантами и переводом каждого. Кнопка «Вставить в ответ» кладёт вариант
+  // в поле ответа X. Отправить — только сам человек.
+  const TWEET_BTN_ATTR = 'data-tolmach-reply';
+  const TWEET_SEL = 'article[data-testid="tweet"]';
+  let tweetObserver = null;
+  let tweetTick = 0;
+
+  function onX() {
+    return /(^|\.)(x|twitter)\.com$/i.test(location.hostname);
+  }
+
+  function syncTweetButtons() {
+    if (!onX()) return;
+    if (settings.showTweetButton === false) {
+      tweetObserver?.disconnect();
+      tweetObserver = null;
+      document.querySelectorAll(`[${TWEET_BTN_ATTR}]`).forEach((b) => b.remove());
+      return;
+    }
+    addTweetButtons();
+    if (tweetObserver) return;
+    // X перерисовывает ленту постоянно — добавляем кнопки не чаще раза в полсекунды.
+    tweetObserver = new MutationObserver(() => {
+      if (tweetTick) return;
+      tweetTick = setTimeout(() => {
+        tweetTick = 0;
+        addTweetButtons();
+      }, 500);
+    });
+    tweetObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function addTweetButtons() {
+    for (const article of document.querySelectorAll(TWEET_SEL)) {
+      if (article.querySelector(`[${TWEET_BTN_ATTR}]`)) continue;
+      const bar = article.querySelector('[role="group"]');
+      if (!bar) continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute(TWEET_BTN_ATTR, '1');
+      btn.title = 'Толмач: три варианта ответа с переводом';
+      btn.innerHTML = REPLY_GLYPH;
+      // Кнопка живёт в разметке X, а не в нашем shadow root, поэтому стили — на ней самой.
+      Object.assign(btn.style, {
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: '34px', height: '34px', padding: '0', margin: '0 2px',
+        border: 'none', borderRadius: '50%', background: 'transparent',
+        color: '#1f8a4c', cursor: 'pointer'
+      });
+      btn.addEventListener('mouseenter', () => (btn.style.background = 'rgba(31,138,76,.12)'));
+      btn.addEventListener('mouseleave', () => (btn.style.background = 'transparent'));
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openTweetReply(article, btn);
+      });
+      bar.append(btn);
+    }
+  }
+
+  function openTweetReply(article, btn) {
+    const text = blockText(article);
+    if (!text || text.length < 3) return;
+
+    const near = [];
+    let budget = CTX_NEAR_MAX;
+    for (const prev of postsBefore(article)) {
+      const t = blockText(prev);
+      if (t.length > 20 && budget > 0) {
+        near.push(t.slice(0, budget));
+        budget -= t.length;
+      }
+    }
+    const pageTitle = tidy(document.title);
+    const context = {
+      page: tidy(pageTitle ? pageTitle + ' — ' + location.href : location.href).slice(0, 300),
+      near: near.join('\n---\n').slice(0, CTX_NEAR_MAX),
+      post: ''
+    };
+
+    const rect = btn.getBoundingClientRect();
+    closeCard();
+    current = { text, tone: null, rect, context, tweet: article };
+    card = buildCard(rect);
+    startReply(text);
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function waitFor(find, timeoutMs) {
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      const found = find();
+      if (found) return found;
+      await sleep(150);
+    }
+    return null;
+  }
+
+  const COMPOSER_SEL = 'div[role="dialog"] [data-testid^="tweetTextarea_"][role="textbox"], div[role="dialog"] div[role="textbox"]';
+
+  async function insertIntoReply(article, text, button) {
+    const say = (label) => {
+      button.textContent = label;
+      setTimeout(() => (button.textContent = 'Вставить в ответ'), 1800);
+    };
+    if (!article.isConnected) {
+      say('Пост ушёл со страницы');
+      return;
+    }
+
+    let box = document.querySelector(COMPOSER_SEL);
+    if (!box) {
+      const replyBtn = article.querySelector('[data-testid="reply"]');
+      if (!replyBtn) {
+        say('Не нашёл кнопку ответа');
+        return;
+      }
+      replyBtn.click();
+      box = await waitFor(() => document.querySelector(COMPOSER_SEL), 5000);
+    }
+    if (!box) {
+      say('Окно ответа не открылось');
+      return;
+    }
+
+    box.focus();
+    // Поле ответа X — редактор Draft.js: он доверяет событию вставки и кладёт
+    // текст в своё состояние. Просто записать текст в разметку нельзя —
+    // X его не увидит и отправит пустой ответ.
+    const data = new DataTransfer();
+    data.setData('text/plain', text);
+    box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    await sleep(200);
+    if (!(box.innerText || '').includes(text.slice(0, 24))) {
+      document.execCommand('insertText', false, text);
+    }
+    closeCard();
   }
 
   // ——— перевод всей страницы ————————————————————————————————————
@@ -731,6 +893,9 @@
   });
 
   // ——— стили и иконка ————————————————————————————————————————————
+  const REPLY_GLYPH =
+    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/></svg>';
+
   const ICON_GLYPH =
     '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h10M9 3v2c0 4.5-2.2 8-5 10"/><path d="M6 10c1.5 2.6 4 4.7 7 5.7"/><path d="M12 21l4.5-11L21 21"/><path d="M14.2 17.5h5.6"/></svg>';
 
@@ -926,6 +1091,12 @@
   .tm-reply-gloss { color: #b3afa7; }
   .tm-reply-copy { background: #303036; color: #ece9e3; border-color: rgba(255,255,255,.14); }
   .tm-reply-copy:hover { background: #3a3a41; }
+  .tm-reply-put, .tm-reply-put:hover { background: #1f8a4c; color: #fff; border-color: #1f8a4c; }
 }
+.tm-reply-put { background: #1f8a4c; color: #fff; border-color: #1f8a4c; margin-right: 6px; }
+.tm-reply-put:hover { background: #197340; }
 `;
+
+  // Последним: кнопкам под постами нужны константы, объявленные выше по файлу.
+  syncTweetButtons();
 })();
