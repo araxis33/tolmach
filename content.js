@@ -333,6 +333,12 @@
     const replies = el('div', 'tm-replies hidden');
     body.append(replies);
 
+    // Отдельная строка под переводом: модель, время, режим размышлений.
+    // В шапке ей не место — там ширина под «−$0,004», длинное имя модели
+    // туда не влезает и просто обрезается.
+    const stamp = el('div', 'tm-stamp hidden');
+    body.append(stamp);
+
     const foot = el('div', 'tm-foot');
     const chips = el('div', 'tm-chips');
     TONE_CHIPS.forEach((t) => {
@@ -365,7 +371,7 @@
     placeCard(box, rect);
     root.append(box);
 
-    return { root: box, dir, spinner, main, altWrap, altText, noteWrap, replies, chips, reply, copy, cost, parsed: null };
+    return { root: box, dir, spinner, main, altWrap, altText, noteWrap, replies, chips, reply, copy, cost, stamp, parsed: null };
   }
 
   function parseStream(raw) {
@@ -504,6 +510,8 @@
     card.reply.classList.remove('active');
     card.copy.classList.remove('hidden');
     card.cost.textContent = '';
+    card.stamp.textContent = '';
+    card.stamp.classList.add('hidden');
     card.chips.querySelectorAll('.tm-chip').forEach((c) => {
       c.classList.toggle('active', c.dataset.tone === tone);
     });
@@ -529,10 +537,11 @@
         render(parseStream(msg.full));
       } else if (msg.type === 'done') {
         card.spinner.classList.add('hidden');
-        // На Gemini денег нет, зато есть что показать вместо них: модель,
-        // сколько ждали и как просили не думать.
-        card.cost.textContent = msg.note || costLine(msg.cost, msg.left);
-        if (msg.note) card.cost.title = 'Модель, время ответа и режим размышлений';
+        card.cost.textContent = costLine(msg.cost, msg.left);
+        // На Gemini денег нет, зато есть что показать: модель, сколько ждали
+        // и как просили не думать.
+        card.stamp.textContent = msg.note || '';
+        card.stamp.classList.toggle('hidden', !msg.note);
         render(parseStream(msg.raw));
         card.dir.textContent = `${SHORT[msg.from] || '?'} → ${SHORT[msg.to] || '?'}`;
       } else if (msg.type === 'error') {
@@ -554,6 +563,8 @@
     card.replies.classList.remove('hidden');
     card.reply.classList.add('active');
     card.cost.textContent = '';
+    card.stamp.textContent = '';
+    card.stamp.classList.add('hidden');
     // Общая кнопка копирования относится к переводу — в этом режиме она лишняя.
     card.copy.classList.add('hidden');
     card.chips.querySelectorAll('.tm-chip').forEach((chip) => chip.classList.remove('active'));
@@ -1046,6 +1057,10 @@
 .tm-reply-btn:hover { background: rgba(31,138,76,.1); color: #1f8a4c; border-color: rgba(31,138,76,.4); }
 .tm-reply-btn.active { background: #1f8a4c; border-color: #1f8a4c; color: #fff; }
 
+.tm-stamp {
+  font-size: 11px; color: #a5a29b; letter-spacing: .02em;
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(0,0,0,.08);
+}
 .tm-cost {
   font-size: 11px; color: #a5a29b; letter-spacing: .02em;
   margin-right: 8px; white-space: nowrap;
@@ -1089,6 +1104,7 @@
   .tm-reply-btn { color: #9c988f; border-color: rgba(255,255,255,.14); }
   .tm-reply-btn:hover { background: rgba(35,163,92,.18); color: #6fd39b; border-color: rgba(111,211,155,.45); }
   .tm-reply-btn.active { background: #1f8a4c; border-color: #1f8a4c; color: #fff; }
+  .tm-stamp { color: #7e7b74; border-top-color: rgba(255,255,255,.1); }
   .tm-cost { color: #7e7b74; }
   .tm-reply-label { color: #7e7b74; }
   .tm-reply-gloss { color: #b3afa7; }
