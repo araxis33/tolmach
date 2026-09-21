@@ -21,6 +21,17 @@ async function getSettings() {
   return { ...DEFAULTS, ...stored };
 }
 
+/**
+ * Запоминаем, каким способом модель приняла ограничение размышлений.
+ * Без этого каждый перевод начинался бы с отказа Google: числовой бюджет
+ * пробуется первым, а модели поколения 3.x его не принимают.
+ */
+async function rememberThinkingStep(settings, step) {
+  if (typeof step !== 'number') return;
+  if (settings.geminiThinkingStep === step) return;
+  await chrome.storage.local.set({ geminiThinkingStep: step });
+}
+
 // ——— счётчик расходов ————————————————————————————————————————
 // Токены берём из ответа API, а не прикидываем по длине текста.
 // Консоль Anthropic обновляется с задержкой и по UTC, поэтому живой счёт — здесь.
@@ -147,7 +158,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         await chrome.storage.local.set({
           geminiKey: msg.key,
           geminiModel: picked.translate,
-          geminiReplyModel: picked.reply
+          geminiReplyModel: picked.reply,
+          // Модели сменились — подобранный способ ограничить размышления
+          // к ним может не подойти, подбираем заново.
+          geminiThinkingStep: 0
         });
         sendResponse({ ok: true, ...picked });
       } catch (err) {
@@ -233,6 +247,7 @@ async function handleTranslate(req, post, signal) {
     onDelta: (_chunk, full) => post({ type: 'delta', full })
   });
 
+  await rememberThinkingStep(settings, result.thinkingStep);
   const cost = await recordSpend('translate', result.model, result.usage);
   post({
     type: 'done',

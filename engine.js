@@ -14,6 +14,10 @@ export const DEFAULTS = {
   // из тех, что реально доступны ключу, когда его проверяют.
   geminiModel: 'gemini-2.5-flash-lite',
   geminiReplyModel: 'gemini-2.5-flash',
+  // Каким способом эта модель принимает ограничение размышлений: 0 — числовой
+  // бюджет, 1 — словесный уровень, 2 — не принимает никак. Подобранное
+  // запоминается, иначе каждый перевод начинался бы с заведомо лишнего отказа.
+  geminiThinkingStep: 0,
   apiKey: '',
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
@@ -324,7 +328,9 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
   const attempts = geminiAttempts(cfg, model);
   let lastError = null;
   // Каким способом просим ограничить размышления: 0 — бюджет, 1 — уровень, 2 — никак.
-  let thinkingStep = 0;
+  // Начинаем с запомненного: подбирать заново на каждом переводе — значит каждый раз
+  // платить лишним отказом от Google.
+  let thinkingStep = Math.min(2, Math.max(0, Number(cfg.geminiThinkingStep) || 0));
   for (let i = 0; i < attempts.length; i++) {
     const current = attempts[i];
     // Повторять можно, только пока на экран ничего не ушло: иначе текст задвоится.
@@ -340,7 +346,7 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
       });
       if (!res.ok) throw await readGeminiError(res);
       const out = await readGeminiStream(res, relay);
-      return { ...out, model: current, how: thinkingLabel(thinkingStep, askedThinking) };
+      return { ...out, model: current, thinkingStep, how: thinkingLabel(thinkingStep, askedThinking) };
     } catch (err) {
       if (signal?.aborted || printed || !(err instanceof TranslationError)) throw err;
       // 400 на запросе с настройкой размышлений — пробуем следующий способ её задать
@@ -702,10 +708,10 @@ export async function translateStream({
   });
 
   const started = Date.now();
-  const { text: full, usage, model, how } = await runModel({
+  const { text: full, usage, model, how, thinkingStep } = await runModel({
     cfg, purpose: 'translate', system, text, fence, maxTokens, signal, onDelta
   });
-  return { raw: full, usage, model, how, took: Date.now() - started, ...dir };
+  return { raw: full, usage, model, how, thinkingStep, took: Date.now() - started, ...dir };
 }
 
 // ——— пакетный перевод страницы —————————————————————————————————
