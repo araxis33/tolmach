@@ -320,7 +320,7 @@ const pause = (ms, signal) =>
     });
   });
 
-async function runGemini({ cfg, model, system, text, fence, maxTokens, signal, onDelta }) {
+async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta }) {
   const attempts = geminiAttempts(cfg, model);
   let lastError = null;
   for (let i = 0; i < attempts.length; i++) {
@@ -332,7 +332,7 @@ async function runGemini({ cfg, model, system, text, fence, maxTokens, signal, o
       if (onDelta) onDelta(piece, full);
     };
     try {
-      const res = await callGemini({ key: cfg.geminiKey, model: current, system, text, fence, maxTokens, signal });
+      const res = await callGemini({ key: cfg.geminiKey, model: current, system, text, fence, maxTokens, purpose, signal });
       if (!res.ok) throw await readGeminiError(res);
       const out = await readGeminiStream(res, relay);
       return { ...out, model: current };
@@ -345,24 +345,40 @@ async function runGemini({ cfg, model, system, text, fence, maxTokens, signal, o
   throw lastError;
 }
 
-export function buildGeminiBody({ system, text, fence, maxTokens }) {
+/**
+ * Сколько модели разрешено думать перед ответом.
+ * Переводу думать не надо вообще: это главная причина долгих пауз — модель
+ * тратит минуты и тысячи токенов «размышлений» ради одной строки перевода.
+ * Ответу немного подумать полезно, но предел должен быть конечным: при
+ * динамическом бюджете Gemini сам решает, сколько думать, и иногда думает долго.
+ * Поле принимают только flash/flash-lite; на остальных моделях его не шлём.
+ */
+export function thinkingBudgetFor(model, purpose) {
+  if (!/flash/i.test(String(model || ''))) return null;
+  return purpose === 'reply' ? 2048 : 0;
+}
+
+export function buildGeminiBody({ system, text, fence, maxTokens, model, purpose }) {
+  const budget = thinkingBudgetFor(model, purpose);
+  const generationConfig = { maxOutputTokens: maxTokens };
+  // Размышления модели Gemini идут в этот же предел, поэтому бюджет мыслей
+  // задаём явно, а не полагаемся на выбор модели.
+  if (budget !== null) generationConfig.thinkingConfig = { thinkingBudget: budget };
   return {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: [{ text: wrapSource(text, fence) }] }],
-    // Размышления модели Gemini тоже идут в этот предел — берём с запасом,
-    // иначе длинный ответ обрывается на полуслове.
-    generationConfig: { maxOutputTokens: maxTokens }
+    generationConfig
   };
 }
 
-async function callGemini({ key, model, system, text, fence, maxTokens, signal }) {
+async function callGemini({ key, model, system, text, fence, maxTokens, purpose, signal }) {
   const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
   return fetch(url, {
     method: 'POST',
     signal,
     // Ключ в заголовке, а не в адресе: адреса оседают в журналах.
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify(buildGeminiBody({ system, text, fence, maxTokens }))
+    body: JSON.stringify(buildGeminiBody({ system, text, fence, maxTokens, model, purpose }))
   });
 }
 

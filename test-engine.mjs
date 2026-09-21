@@ -22,6 +22,7 @@ import {
   geminiErrorFrom,
   pickGeminiModels,
   geminiAttempts,
+  thinkingBudgetFor,
   replyStream
 } from './engine.js';
 
@@ -346,6 +347,22 @@ check('пустая модель Gemini в настройках не ломае�
   check('системный промпт уходит в systemInstruction', body.systemInstruction.parts[0].text, 'SYS');
   check('текст уходит обёрнутым, как у Claude', body.contents[0].parts[0].text.includes('<tolmach_x>'), true);
   check('предел длины передаётся', body.generationConfig.maxOutputTokens, 777);
+}
+
+// Долгие паузы при переводе — это «размышления» модели. Переводу они не нужны.
+check('переводу думать нечего', thinkingBudgetFor('gemini-2.5-flash-lite', 'translate'), 0);
+check('страница переводится без размышлений', thinkingBudgetFor('gemini-2.5-flash', 'page'), 0);
+check('ответу бюджет мыслей конечный', thinkingBudgetFor('gemini-2.5-flash', 'reply'), 2048);
+check('не-flash моделям поле не шлём', thinkingBudgetFor('gemini-2.5-pro', 'translate'), null);
+check('пустая модель не ломает расчёт', thinkingBudgetFor('', 'translate'), null);
+
+{
+  const t = buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100, model: 'gemini-2.5-flash-lite', purpose: 'translate' });
+  check('перевод уходит с нулевым бюджетом мыслей', t.generationConfig.thinkingConfig.thinkingBudget, 0);
+  const r = buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100, model: 'gemini-2.5-flash', purpose: 'reply' });
+  check('ответ уходит с конечным бюджетом мыслей', r.generationConfig.thinkingConfig.thinkingBudget, 2048);
+  const p = buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100, model: 'gemini-2.5-pro', purpose: 'translate' });
+  check('на pro поля thinkingConfig нет', p.generationConfig.thinkingConfig, undefined);
 }
 
 check(
