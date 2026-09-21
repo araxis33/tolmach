@@ -234,7 +234,17 @@ async function handleTranslate(req, post, signal) {
   });
 
   const cost = await recordSpend('translate', result.model, result.usage);
-  post({ type: 'done', raw: result.raw, to: result.to, from: result.from, cost, left: await moneyLeft() });
+  post({
+    type: 'done',
+    raw: result.raw,
+    to: result.to,
+    from: result.from,
+    cost,
+    left: await moneyLeft(),
+    // Подпись под переводом на Gemini: на чём считали, сколько ждали и как
+    // просили не думать. Без неё жалобу «долго» нечем мерить.
+    note: result.how ? `${result.model}  ·  ${(result.took / 1000).toFixed(1)} с  ·  ${result.how}` : ''
+  });
 }
 
 async function handleReply(req, post, signal) {

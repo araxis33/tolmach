@@ -529,7 +529,10 @@
         render(parseStream(msg.full));
       } else if (msg.type === 'done') {
         card.spinner.classList.add('hidden');
-        card.cost.textContent = costLine(msg.cost, msg.left);
+        // На Gemini денег нет, зато есть что показать вместо них: модель,
+        // сколько ждали и как просили не думать.
+        card.cost.textContent = msg.note || costLine(msg.cost, msg.left);
+        if (msg.note) card.cost.title = 'Модель, время ответа и режим размышлений';
         render(parseStream(msg.raw));
         card.dir.textContent = `${SHORT[msg.from] || '?'} → ${SHORT[msg.to] || '?'}`;
       } else if (msg.type === 'error') {

@@ -340,7 +340,7 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
       });
       if (!res.ok) throw await readGeminiError(res);
       const out = await readGeminiStream(res, relay);
-      return { ...out, model: current };
+      return { ...out, model: current, how: thinkingLabel(thinkingStep, askedThinking) };
     } catch (err) {
       if (signal?.aborted || printed || !(err instanceof TranslationError)) throw err;
       // 400 на запросе с настройкой размышлений — пробуем следующий способ её задать
@@ -383,7 +383,16 @@ export function thinkingConfigFor(model, purpose, step = 0) {
   const budget = thinkingBudgetFor(model, purpose, step >= 2);
   if (budget === null) return null;
   if (step === 0) return { thinkingBudget: budget };
-  return { thinkingLevel: purpose === 'reply' ? 'low' : 'minimal' };
+  // На втором заходе просим словесный уровень. Берём 'low': он есть у всех
+  // поколений, где это поле вообще существует. 'minimal' поддержан не везде,
+  // и отказ из-за него стоил бы ещё одного круга.
+  return { thinkingLevel: 'low' };
+}
+
+/** Как в итоге спросили модель — строка для подписи под переводом. */
+export function thinkingLabel(step, asked) {
+  if (!asked) return 'мысли: как решит модель';
+  return step === 0 ? 'мысли: по счёту' : 'мысли: уровень low';
 }
 
 export function buildGeminiBody({ system, text, fence, maxTokens, model, purpose, thinkingStep = 0 }) {
@@ -692,10 +701,11 @@ export async function translateStream({
     fence
   });
 
-  const { text: full, usage, model } = await runModel({
+  const started = Date.now();
+  const { text: full, usage, model, how } = await runModel({
     cfg, purpose: 'translate', system, text, fence, maxTokens, signal, onDelta
   });
-  return { raw: full, usage, model, ...dir };
+  return { raw: full, usage, model, how, took: Date.now() - started, ...dir };
 }
 
 // ——— пакетный перевод страницы —————————————————————————————————

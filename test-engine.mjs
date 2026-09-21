@@ -24,6 +24,7 @@ import {
   geminiAttempts,
   thinkingBudgetFor,
   thinkingConfigFor,
+  thinkingLabel,
   replyStream
 } from './engine.js';
 
@@ -369,9 +370,9 @@ check('пустая модель не ломает расчёт', thinkingBudget
   // Google на «invalid argument» не говорит, какое поле лишнее, поэтому способ
   // ограничить размышления перебирается по шагам.
   const step1 = body({ model: 'gemini-3-flash-lite', purpose: 'translate', thinkingStep: 1 });
-  check('второй заход просит уровень, а не бюджет', step1.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+  check('второй заход просит уровень, а не бюджет', step1.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
   const step1r = body({ model: 'gemini-3-flash', purpose: 'reply', thinkingStep: 1 });
-  check('ответу на втором заходе уровень низкий', step1r.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+  check('уровень один и тот же для перевода и ответа', step1r.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
   const step2 = body({ model: 'gemini-3-flash-lite', purpose: 'translate', thinkingStep: 2 });
   check('третий заход идёт вовсе без настройки', step2.generationConfig.thinkingConfig, undefined);
   check('предел длины остаётся на всех заходах', step2.generationConfig.maxOutputTokens, 100);
@@ -448,6 +449,11 @@ check('ошибка внутри потока без HTTP-кода тоже ра
 
   globalThis.fetch = realFetch;
 }
+
+// Подпись под переводом — единственный способ померить жалобу «долго».
+check('подпись: спросили по счёту', thinkingLabel(0, true), 'мысли: по счёту');
+check('подпись: спросили уровнем', thinkingLabel(1, true), 'мысли: уровень low');
+check('подпись: не спрашивали вовсе', thinkingLabel(2, false), 'мысли: как решит модель');
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);
