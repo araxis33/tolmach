@@ -23,6 +23,7 @@ import {
   pickGeminiModels,
   geminiAttempts,
   thinkingBudgetFor,
+  thinkingConfigFor,
   replyStream
 } from './engine.js';
 
@@ -357,13 +358,27 @@ check('не-flash моделям поле не шлём', thinkingBudgetFor('gem
 check('пустая модель не ломает расчёт', thinkingBudgetFor('', 'translate'), null);
 
 {
-  const t = buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100, model: 'gemini-2.5-flash-lite', purpose: 'translate' });
+  const body = (extra) => buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100, ...extra });
+  const t = body({ model: 'gemini-2.5-flash-lite', purpose: 'translate' });
   check('перевод уходит с нулевым бюджетом мыслей', t.generationConfig.thinkingConfig.thinkingBudget, 0);
-  const r = buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100, model: 'gemini-2.5-flash', purpose: 'reply' });
+  const r = body({ model: 'gemini-2.5-flash', purpose: 'reply' });
   check('ответ уходит с конечным бюджетом мыслей', r.generationConfig.thinkingConfig.thinkingBudget, 2048);
-  const p = buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100, model: 'gemini-2.5-pro', purpose: 'translate' });
+  const p = body({ model: 'gemini-2.5-pro', purpose: 'translate' });
   check('на pro поля thinkingConfig нет', p.generationConfig.thinkingConfig, undefined);
+
+  // Google на «invalid argument» не говорит, какое поле лишнее, поэтому способ
+  // ограничить размышления перебирается по шагам.
+  const step1 = body({ model: 'gemini-3-flash-lite', purpose: 'translate', thinkingStep: 1 });
+  check('второй заход просит уровень, а не бюджет', step1.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+  const step1r = body({ model: 'gemini-3-flash', purpose: 'reply', thinkingStep: 1 });
+  check('ответу на втором заходе уровень низкий', step1r.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+  const step2 = body({ model: 'gemini-3-flash-lite', purpose: 'translate', thinkingStep: 2 });
+  check('третий заход идёт вовсе без настройки', step2.generationConfig.thinkingConfig, undefined);
+  check('предел длины остаётся на всех заходах', step2.generationConfig.maxOutputTokens, 100);
 }
+
+check('400 от Google — отдельный вид ошибки', geminiErrorFrom(400, { message: 'Request contains an invalid argument.' }).kind, 'argument');
+check('в тексте 400 видно слова Google', geminiErrorFrom(400, { message: 'Request contains an invalid argument.' }).message.includes('Request contains an invalid argument.'), true);
 
 check(
   'мысли модели не попадают в перевод',

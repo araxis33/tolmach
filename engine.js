@@ -323,6 +323,8 @@ const pause = (ms, signal) =>
 async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta }) {
   const attempts = geminiAttempts(cfg, model);
   let lastError = null;
+  // Каким способом просим ограничить размышления: 0 — бюджет, 1 — уровень, 2 — никак.
+  let thinkingStep = 0;
   for (let i = 0; i < attempts.length; i++) {
     const current = attempts[i];
     // Повторять можно, только пока на экран ничего не ушло: иначе текст задвоится.
@@ -331,13 +333,25 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
       printed = true;
       if (onDelta) onDelta(piece, full);
     };
+    const askedThinking = thinkingConfigFor(current, purpose, thinkingStep) !== null;
     try {
-      const res = await callGemini({ key: cfg.geminiKey, model: current, system, text, fence, maxTokens, purpose, signal });
+      const res = await callGemini({
+        key: cfg.geminiKey, model: current, system, text, fence, maxTokens, purpose, thinkingStep, signal
+      });
       if (!res.ok) throw await readGeminiError(res);
       const out = await readGeminiStream(res, relay);
       return { ...out, model: current };
     } catch (err) {
-      if (signal?.aborted || printed || !(err instanceof TranslationError) || !RETRYABLE.has(err.kind)) throw err;
+      if (signal?.aborted || printed || !(err instanceof TranslationError)) throw err;
+      // 400 на запросе с настройкой размышлений — пробуем следующий способ её задать
+      // на той же модели: попытку не сжигаем и не ждём, ошибка мгновенная.
+      if (err.kind === 'argument' && askedThinking && thinkingStep < 2) {
+        thinkingStep += 1;
+        lastError = err;
+        i -= 1;
+        continue;
+      }
+      if (!RETRYABLE.has(err.kind)) throw err;
       lastError = err;
       if (i < attempts.length - 1) await pause(i === 0 ? 800 : 300, signal);
     }
@@ -353,17 +367,31 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
  * динамическом бюджете Gemini сам решает, сколько думать, и иногда думает долго.
  * Поле принимают только flash/flash-lite; на остальных моделях его не шлём.
  */
-export function thinkingBudgetFor(model, purpose) {
+export function thinkingBudgetFor(model, purpose, skip) {
+  if (skip) return null;
   if (!/flash/i.test(String(model || ''))) return null;
   return purpose === 'reply' ? 2048 : 0;
 }
 
-export function buildGeminiBody({ system, text, fence, maxTokens, model, purpose }) {
-  const budget = thinkingBudgetFor(model, purpose);
+/**
+ * Как именно просить модель не думать. Поколения Gemini зовут это поле
+ * по-разному, а какое поколение у человека в ключе — заранее не известно,
+ * поэтому пробуем по очереди: 0 — числовой бюджет, 1 — словесный уровень,
+ * 2 — не просить вовсе. Шаг выбирает runGemini по ответу Google.
+ */
+export function thinkingConfigFor(model, purpose, step = 0) {
+  const budget = thinkingBudgetFor(model, purpose, step >= 2);
+  if (budget === null) return null;
+  if (step === 0) return { thinkingBudget: budget };
+  return { thinkingLevel: purpose === 'reply' ? 'low' : 'minimal' };
+}
+
+export function buildGeminiBody({ system, text, fence, maxTokens, model, purpose, thinkingStep = 0 }) {
+  const thinking = thinkingConfigFor(model, purpose, thinkingStep);
   const generationConfig = { maxOutputTokens: maxTokens };
-  // Размышления модели Gemini идут в этот же предел, поэтому бюджет мыслей
-  // задаём явно, а не полагаемся на выбор модели.
-  if (budget !== null) generationConfig.thinkingConfig = { thinkingBudget: budget };
+  // Размышления модели Gemini идут в этот же предел, поэтому просим их ограничить
+  // явно, а не полагаемся на выбор модели.
+  if (thinking) generationConfig.thinkingConfig = thinking;
   return {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: [{ text: wrapSource(text, fence) }] }],
@@ -371,14 +399,14 @@ export function buildGeminiBody({ system, text, fence, maxTokens, model, purpose
   };
 }
 
-async function callGemini({ key, model, system, text, fence, maxTokens, purpose, signal }) {
+async function callGemini({ key, model, system, text, fence, maxTokens, purpose, thinkingStep, signal }) {
   const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
   return fetch(url, {
     method: 'POST',
     signal,
     // Ключ в заголовке, а не в адресе: адреса оседают в журналах.
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify(buildGeminiBody({ system, text, fence, maxTokens, model, purpose }))
+    body: JSON.stringify(buildGeminiBody({ system, text, fence, maxTokens, model, purpose, thinkingStep }))
   });
 }
 
@@ -477,6 +505,14 @@ export function geminiErrorFrom(httpStatus, error) {
     // Текст Google показываем: «перегружена» и «внутренняя ошибка» лечатся по-разному.
     const said = message ? ` Google: «${message.slice(0, 160)}»` : '';
     return new TranslationError(`Gemini сейчас не отвечает (${code || status}).${said}`, 'server');
+  }
+  // 400 «Request contains an invalid argument» Google отдаёт БЕЗ указания поля.
+  // Единственное необязательное поле, которое шлёт Толмач, — бюджет мыслей,
+  // поэтому такую ошибку лечим повтором без него (решение принимает runGemini,
+  // он один знает, отправляли поле или нет).
+  if (code === 400 || status === 'INVALID_ARGUMENT') {
+    const said = message ? ` Google: «${message.slice(0, 160)}»` : '';
+    return new TranslationError(`Gemini не принял запрос (400).${said}`, 'argument');
   }
   return new TranslationError(message || `Ошибка ${code}`, 'api');
 }
