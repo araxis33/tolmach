@@ -58,6 +58,16 @@
       и с большим дневным лимитом, Flash вдумчивее. Упёрся в лимит — поставь Flash-Lite
       и для ответов. Сколько осталось на сегодня, Google показывает в AI Studio.
     </p>
+    <label class="check">
+      <input type="checkbox" id="claudeWhenGeminiBusy">
+      <span>Если Gemini перегружен — доделать через Claude</span>
+    </label>
+    <p class="help">
+      У бесплатного Gemini бывают всплески спроса: Google отвечает «high demand», и
+      расширение встаёт. С этой галочкой запрос доделает Claude — но только если ниже
+      задан ключ Anthropic и на экран ещё ничего не напечаталось. Под переводом будет
+      видно, что выручил Claude, а трата попадёт в счётчик денег.
+    </p>
   </section>
 
   <section class="card hidden" id="claudeCard">

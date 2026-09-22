@@ -591,6 +591,8 @@
       } else if (msg.type === 'reply-done') {
         card.spinner.classList.add('hidden');
         card.cost.textContent = costLine(msg.cost, msg.left);
+        card.stamp.textContent = msg.note || '';
+        card.stamp.classList.toggle('hidden', !msg.note);
         renderReplies(parseReplyStream(msg.raw));
       } else if (msg.type === 'error') {
         card.replies.classList.add('hidden');

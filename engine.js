@@ -19,6 +19,9 @@ export const DEFAULTS = {
   // запоминается, иначе каждый перевод начинался бы с заведомо лишнего отказа.
   geminiThinkingStep: 0,
   apiKey: '',
+  // Если бесплатный Gemini лёг (503 «высокий спрос»), доделать запрос через Claude,
+  // когда ключ Anthropic задан. Иначе расширение просто встаёт на время сбоя Google.
+  claudeWhenGeminiBusy: true,
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
   foreign: 'en',       // рабочий второй язык
@@ -292,12 +295,48 @@ async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, 
   requireKey(cfg);
   const model = modelFor(cfg, purpose);
   if (providerOf(cfg) === 'gemini') {
-    return runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta });
+    // Пока на экран ничего не ушло, работу можно доделать на другом провайдере.
+    // Как только первый кусок напечатан — нельзя: текст задвоится.
+    let printed = false;
+    const relay = (piece, full) => {
+      printed = true;
+      if (onDelta) onDelta(piece, full);
+    };
+    try {
+      return await runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta: relay });
+    } catch (err) {
+      if (!canFallBackToClaude(cfg, err, printed) || signal?.aborted) throw err;
+      const claudeModel = claudeModelFor(cfg, purpose);
+      const res = await callApi({ cfg, system, text, fence, maxTokens, signal, effort, model: claudeModel });
+      // Не вышло и здесь — человеку важнее знать, что перегружен Gemini.
+      if (!res.ok) throw err;
+      const out = await readStream(res, onDelta);
+      return { ...out, model: claudeModel, how: `выручил Claude — ${err.message}` };
+    }
   }
   const res = await callApi({ cfg, system, text, fence, maxTokens, signal, effort, model });
   if (!res.ok) throw await readError(res);
   const out = await readStream(res, onDelta);
   return { ...out, model };
+}
+
+/** Модель Claude под задачу — нужна и запасному пути, когда Gemini лёг. */
+export function claudeModelFor(cfg, purpose) {
+  return purpose === 'reply' ? cfg.replyModel || cfg.model || DEFAULTS.model : cfg.model || DEFAULTS.model;
+}
+
+/**
+ * Можно ли доделать через Claude. Только когда Gemini именно перегружен или
+ * упёрся в квоту: на неверный ключ или дурной запрос запасной путь не поможет,
+ * а деньги спишет. И только если ключ Anthropic вообще есть — иначе человек
+ * увидит «не задан ключ» вместо настоящей причины.
+ */
+export function canFallBackToClaude(cfg, err, printed) {
+  if (printed) return false;
+  if (cfg.claudeWhenGeminiBusy === false) return false;
+  if (!cfg.apiKey) return false;
+  if (!(err instanceof TranslationError)) return false;
+  return err.kind === 'server' || err.kind === 'rate';
 }
 
 // ——— Gemini ————————————————————————————————————————————————————
@@ -315,6 +354,16 @@ export function geminiAttempts(cfg, model) {
 }
 
 const RETRYABLE = new Set(['server', 'rate', 'model']);
+
+/**
+ * Сколько ждать перед следующей попыткой. Перегрузка и квота проходят за
+ * секунды, а не за миллисекунды: 800 мс были слишком коротким ожиданием, чтобы
+ * пережить всплеск спроса на бесплатном тарифе. Остальные причины ждать не надо.
+ */
+export function retryPause(kind, index) {
+  if (kind === 'server' || kind === 'rate') return index === 0 ? 1500 : 3500;
+  return index === 0 ? 800 : 300;
+}
 const pause = (ms, signal) =>
   new Promise((resolve) => {
     const t = setTimeout(resolve, ms);
@@ -359,7 +408,7 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
       }
       if (!RETRYABLE.has(err.kind)) throw err;
       lastError = err;
-      if (i < attempts.length - 1) await pause(i === 0 ? 800 : 300, signal);
+      if (i < attempts.length - 1) await pause(retryPause(err.kind, i), signal);
     }
   }
   throw lastError;
@@ -839,10 +888,10 @@ export async function replyStream({ text, context, settings, maxTokens = 16000, 
 
   // Ответы держим на своей модели (modelFor): их пишут пачками, и им нужно
   // вникать. На Claude — effort high: на low ответы выходили не вникая.
-  const { text: written, usage, model } = await runModel({
+  const { text: written, usage, model, how } = await runModel({
     cfg, purpose: 'reply', system, text: payload, fence, maxTokens, signal, effort: 'high', onDelta
   });
-  return { raw: written, usage, model };
+  return { raw: written, usage, model, how };
 }
 
 const SEG_OPEN = '⟦';

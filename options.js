@@ -38,6 +38,7 @@ const FIELDS = {
   geminiModel: { el: () => $('geminiModel'), prop: 'value' },
   geminiReplyModel: { el: () => $('geminiReplyModel'), prop: 'value' },
   showTweetButton: { el: () => $('showTweetButton'), prop: 'checked' },
+  claudeWhenGeminiBusy: { el: () => $('claudeWhenGeminiBusy'), prop: 'checked' },
   apiKey: { el: () => $('apiKey'), prop: 'value' },
   native: { el: () => $('native'), prop: 'value' },
   foreign: { el: () => $('foreign'), prop: 'value' },
@@ -92,6 +93,7 @@ async function init() {
 
   paintProvider();
   $('provider').addEventListener('change', paintProvider);
+  $('claudeWhenGeminiBusy').addEventListener('change', paintProvider);
   $('geminiReveal').addEventListener('click', () => {
     const box = $('geminiKey');
     const hidden = box.type === 'password';
@@ -320,8 +322,11 @@ function save(key) {
 // Разделы Claude, включая деньги, на Gemini не нужны: платить там не за что.
 function paintProvider() {
   const claude = $('provider').value === 'claude';
-  $('claudeCard').classList.toggle('hidden', !claude);
-  $('moneyCard').classList.toggle('hidden', !claude);
+  // На Gemini ключ Anthropic всё же нужен, если включена подстраховка «доделать
+  // через Claude»: без видимого поля ключ было бы негде задать.
+  const needsClaudeKey = claude || $('claudeWhenGeminiBusy').checked;
+  $('claudeCard').classList.toggle('hidden', !needsClaudeKey);
+  $('moneyCard').classList.toggle('hidden', !needsClaudeKey);
   $('geminiCard').classList.toggle('hidden', claude);
 }
 

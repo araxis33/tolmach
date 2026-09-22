@@ -281,7 +281,15 @@ async function handleReply(req, post, signal) {
   });
 
   const cost = await recordSpend('reply', result.model, result.usage);
-  post({ type: 'reply-done', raw: result.raw, cost, left: await moneyLeft() });
+  post({
+    type: 'reply-done',
+    raw: result.raw,
+    cost,
+    left: await moneyLeft(),
+    // Если Gemini лёг и ответ дописал Claude — это должно быть видно в карточке:
+    // иначе трата появится в счётчике денег без объяснения.
+    note: result.how ? `${result.model}  ·  ${result.how}` : ''
+  });
 }
 
 // Куски страницы шлём пачками: экономнее по токенам и модель видит контекст.

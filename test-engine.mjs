@@ -25,7 +25,11 @@ import {
   thinkingBudgetFor,
   thinkingConfigFor,
   thinkingLabel,
-  replyStream
+  replyStream,
+  canFallBackToClaude,
+  claudeModelFor,
+  retryPause,
+  TranslationError
 } from './engine.js';
 
 let failed = 0;
@@ -450,9 +454,55 @@ check('ошибка внутри потока без HTTP-кода тоже ра
   globalThis.fetch = realFetch;
 }
 
+// ——— когда Gemini лёг целиком, работу доделывает Claude ————————————
+{
+  const busyErr = new TranslationError('Gemini сейчас не отвечает (503).', 'server');
+  const badKey = new TranslationError('Ключ Gemini не принят.', 'nokey');
+
+  check('перегрузка + ключ Anthropic → подстраховка разрешена',
+    canFallBackToClaude({ apiKey: 'sk-x' }, busyErr, false), true);
+  check('без ключа Anthropic подстраховки нет',
+    canFallBackToClaude({ apiKey: '' }, busyErr, false), false);
+  check('галочка снята — подстраховки нет',
+    canFallBackToClaude({ apiKey: 'sk-x', claudeWhenGeminiBusy: false }, busyErr, false), false);
+  check('текст уже печатается — доделывать нельзя, задвоится',
+    canFallBackToClaude({ apiKey: 'sk-x' }, busyErr, true), false);
+  check('дурной ключ Gemini Claude не лечит',
+    canFallBackToClaude({ apiKey: 'sk-x' }, badKey, false), false);
+
+  check('перегрузку ждём секундами, а не миллисекундами', [retryPause('server', 0), retryPause('server', 1)], [1500, 3500]);
+  check('прочие причины ждут по-старому', [retryPause('model', 0), retryPause('model', 1)], [800, 300]);
+  check('запасная модель ответа — та же, что у Claude обычно', claudeModelFor({ model: 'claude-opus-5', replyModel: 'claude-sonnet-5' }, 'reply'), 'claude-sonnet-5');
+
+  const g = {
+    provider: 'gemini', geminiKey: 'k', geminiModel: 'lite-m', geminiReplyModel: 'flash-m',
+    apiKey: 'sk-x', model: 'claude-opus-5', replyModel: 'claude-sonnet-5'
+  };
+  const busy = () => new Response(JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'high demand' } }), { status: 503 });
+  const claudeSse = () =>
+    new Response(
+      `data: ${JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 10, output_tokens: 0 } } })}\n\n` +
+      `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'saved reply' } })}\n\n`,
+      { status: 200 }
+    );
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    seen.push(String(url).includes('anthropic') ? 'claude' : 'gemini');
+    return String(url).includes('anthropic') ? claudeSse() : busy();
+  };
+  const out = await replyStream({ text: 'gm builders', context: {}, settings: g });
+  check('Gemini лёг целиком → ответ пишет Claude', [out.raw, out.model], ['saved reply', 'claude-sonnet-5']);
+  check('в подписи видно, кто выручил и почему', /выручил Claude/.test(out.how || ''), true);
+  check('к Claude пошли только после всех попыток Gemini', seen, ['gemini', 'gemini', 'gemini', 'claude']);
+
+  globalThis.fetch = realFetch;
+}
+
 // Подпись под переводом — единственный способ померить жалобу «долго».
 // Подобранный способ запоминается: иначе каждый перевод начинается с отказа.
 check('запомненный шаг есть в настройках по умолчанию', DEFAULTS.geminiThinkingStep, 0);
+check('подстраховка Claude включена по умолчанию', DEFAULTS.claudeWhenGeminiBusy, true);
 
 check('подпись: спросили по счёту', thinkingLabel(0, true), 'мысли: по счёту');
 check('подпись: спросили уровнем', thinkingLabel(1, true), 'мысли: уровень low');
