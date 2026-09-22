@@ -305,11 +305,16 @@ async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, 
     try {
       return await runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta: relay });
     } catch (err) {
-      if (!canFallBackToClaude(cfg, err, printed) || signal?.aborted) throw err;
+      if (signal?.aborted) throw err;
+      const blocked = fallbackBlockedReason(cfg, err, printed);
+      // Молча пропускаем только то, где подстраховка и не должна была включиться.
+      if (blocked) throw blocked === SILENT ? err : withReason(err, blocked);
       const claudeModel = claudeModelFor(cfg, purpose);
       const res = await callApi({ cfg, system, text, fence, maxTokens, signal, effort, model: claudeModel });
-      // Не вышло и здесь — человеку важнее знать, что перегружен Gemini.
-      if (!res.ok) throw err;
+      if (!res.ok) {
+        const second = await readError(res);
+        throw withReason(err, `Claude тоже не смог: ${second.message}`);
+      }
       const out = await readStream(res, onDelta);
       return { ...out, model: claudeModel, how: `выручил Claude — ${err.message}` };
     }
@@ -332,11 +337,35 @@ export function claudeModelFor(cfg, purpose) {
  * увидит «не задан ключ» вместо настоящей причины.
  */
 export function canFallBackToClaude(cfg, err, printed) {
-  if (printed) return false;
-  if (cfg.claudeWhenGeminiBusy === false) return false;
-  if (!cfg.apiKey) return false;
-  if (!(err instanceof TranslationError)) return false;
-  return err.kind === 'server' || err.kind === 'rate';
+  return fallbackBlockedReason(cfg, err, printed) === null;
+}
+
+/** Причины, о которых человеку знать незачем: подстраховка и не предполагалась. */
+export const SILENT = 'silent';
+
+/**
+ * Почему подстраховка не включилась — словами, которые видно в карточке.
+ * Без этого «Gemini не отвечает» выглядит одинаково и когда ключа Anthropic нет,
+ * и когда галочка снята, и когда Claude сам отказал. Три разные починки.
+ * Возвращает null, если подстраховку можно делать.
+ */
+export function fallbackBlockedReason(cfg, err, printed) {
+  if (!(err instanceof TranslationError)) return SILENT;
+  if (err.kind !== 'server' && err.kind !== 'rate') return SILENT;
+  if (printed) return SILENT;
+  if (cfg.claudeWhenGeminiBusy === false) {
+    return 'Claude не подстраховал: галочка в Параметрах снята.';
+  }
+  if (!cfg.apiKey) {
+    return 'Claude не подстраховал: в Параметрах не задан ключ Anthropic.';
+  }
+  return null;
+}
+
+/** Дописать к ошибке вторую строку — причину, а не заменить первую. */
+export function withReason(err, reason) {
+  const next = new TranslationError(`${err.message} ${reason}`, err.kind);
+  return next;
 }
 
 // ——— Gemini ————————————————————————————————————————————————————

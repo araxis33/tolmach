@@ -27,6 +27,9 @@ import {
   thinkingLabel,
   replyStream,
   canFallBackToClaude,
+  fallbackBlockedReason,
+  withReason,
+  SILENT,
   claudeModelFor,
   retryPause,
   TranslationError
@@ -469,6 +472,15 @@ check('ошибка внутри потока без HTTP-кода тоже ра
     canFallBackToClaude({ apiKey: 'sk-x' }, busyErr, true), false);
   check('дурной ключ Gemini Claude не лечит',
     canFallBackToClaude({ apiKey: 'sk-x' }, badKey, false), false);
+
+  check('не сработала из-за ключа — так и написано',
+    fallbackBlockedReason({ apiKey: '' }, busyErr, false), 'Claude не подстраховал: в Параметрах не задан ключ Anthropic.');
+  check('не сработала из-за галочки — так и написано',
+    fallbackBlockedReason({ apiKey: 'sk-x', claudeWhenGeminiBusy: false }, busyErr, false), 'Claude не подстраховал: галочка в Параметрах снята.');
+  check('где подстраховка не предполагалась — молчим', fallbackBlockedReason({ apiKey: 'sk-x' }, badKey, false), SILENT);
+  check('причина дописывается, а не затирает ошибку Google',
+    withReason(busyErr, 'Claude тоже не смог: нет денег.').message,
+    'Gemini сейчас не отвечает (503). Claude тоже не смог: нет денег.');
 
   check('перегрузку ждём секундами, а не миллисекундами', [retryPause('server', 0), retryPause('server', 1)], [1500, 3500]);
   check('прочие причины ждут по-старому', [retryPause('model', 0), retryPause('model', 1)], [800, 300]);
