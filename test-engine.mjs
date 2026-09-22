@@ -22,6 +22,7 @@ import {
   geminiErrorFrom,
   pickGeminiModels,
   geminiAttempts,
+  FREE_FALLBACK_MODELS,
   thinkingBudgetFor,
   thinkingConfigFor,
   thinkingLabel,
@@ -427,8 +428,13 @@ check('ошибка внутри потока без HTTP-кода тоже ра
 // ——— ответ не падает, когда Flash перегружена ——————————————————————
 {
   const g = { provider: 'gemini', geminiKey: 'k', geminiModel: 'lite-m', geminiReplyModel: 'flash-m' };
-  check('попытки: Flash дважды, потом модель перевода', geminiAttempts(g, 'flash-m'), ['flash-m', 'flash-m', 'lite-m']);
-  check('перевод без лишнего третьего круга на ту же модель', geminiAttempts(g, 'lite-m'), ['lite-m', 'lite-m']);
+  check('попытки: Flash дважды, потом модель перевода, потом соседи ключа',
+    geminiAttempts({ ...g, geminiAvailable: ['flash-m', 'lite-m', 'old-flash'] }, 'flash-m'),
+    ['flash-m', 'flash-m', 'lite-m', 'old-flash']);
+  check('перевод без лишнего третьего круга на ту же модель',
+    geminiAttempts({ ...g, geminiAvailable: ['lite-m'] }, 'lite-m'), ['lite-m', 'lite-m']);
+  check('списка моделей ещё нет — в запас идёт прошлое поколение',
+    geminiAttempts(g, 'lite-m'), ['lite-m', 'lite-m', ...FREE_FALLBACK_MODELS]);
 
   const sse = (text) =>
     new Response(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] })}\n\n`, { status: 200 });
@@ -462,22 +468,24 @@ check('ошибка внутри потока без HTTP-кода тоже ра
   const busyErr = new TranslationError('Gemini сейчас не отвечает (503).', 'server');
   const badKey = new TranslationError('Ключ Gemini не принят.', 'nokey');
 
-  check('перегрузка + ключ Anthropic → подстраховка разрешена',
-    canFallBackToClaude({ apiKey: 'sk-x' }, busyErr, false), true);
+  const paid = { apiKey: 'sk-x', claudeWhenGeminiBusy: true };
+  check('галочка включена + ключ Anthropic → подстраховка разрешена',
+    canFallBackToClaude(paid, busyErr, false), true);
+  check('по умолчанию, без галочки, платного пути нет',
+    canFallBackToClaude({ apiKey: 'sk-x' }, busyErr, false), false);
   check('без ключа Anthropic подстраховки нет',
-    canFallBackToClaude({ apiKey: '' }, busyErr, false), false);
-  check('галочка снята — подстраховки нет',
-    canFallBackToClaude({ apiKey: 'sk-x', claudeWhenGeminiBusy: false }, busyErr, false), false);
+    canFallBackToClaude({ ...paid, apiKey: '' }, busyErr, false), false);
   check('текст уже печатается — доделывать нельзя, задвоится',
-    canFallBackToClaude({ apiKey: 'sk-x' }, busyErr, true), false);
+    canFallBackToClaude(paid, busyErr, true), false);
   check('дурной ключ Gemini Claude не лечит',
-    canFallBackToClaude({ apiKey: 'sk-x' }, badKey, false), false);
+    canFallBackToClaude(paid, badKey, false), false);
 
-  check('не сработала из-за ключа — так и написано',
-    fallbackBlockedReason({ apiKey: '' }, busyErr, false), 'Claude не подстраховал: в Параметрах не задан ключ Anthropic.');
-  check('не сработала из-за галочки — так и написано',
-    fallbackBlockedReason({ apiKey: 'sk-x', claudeWhenGeminiBusy: false }, busyErr, false), 'Claude не подстраховал: галочка в Параметрах снята.');
-  check('где подстраховка не предполагалась — молчим', fallbackBlockedReason({ apiKey: 'sk-x' }, badKey, false), SILENT);
+  check('галочка включена, а ключа нет — так и написано',
+    fallbackBlockedReason({ ...paid, apiKey: '' }, busyErr, false),
+    'Claude не подстраховал: в Параметрах не задан ключ Anthropic.');
+  check('выключенная подстраховка — не повод шуметь в ошибке',
+    fallbackBlockedReason({ apiKey: 'sk-x' }, busyErr, false), SILENT);
+  check('где подстраховка не предполагалась — молчим', fallbackBlockedReason(paid, badKey, false), SILENT);
   check('причина дописывается, а не затирает ошибку Google',
     withReason(busyErr, 'Claude тоже не смог: нет денег.').message,
     'Gemini сейчас не отвечает (503). Claude тоже не смог: нет денег.');
@@ -488,7 +496,8 @@ check('ошибка внутри потока без HTTP-кода тоже ра
 
   const g = {
     provider: 'gemini', geminiKey: 'k', geminiModel: 'lite-m', geminiReplyModel: 'flash-m',
-    apiKey: 'sk-x', model: 'claude-opus-5', replyModel: 'claude-sonnet-5'
+    geminiAvailable: ['flash-m', 'lite-m'],
+    apiKey: 'sk-x', claudeWhenGeminiBusy: true, model: 'claude-opus-5', replyModel: 'claude-sonnet-5'
   };
   const busy = () => new Response(JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'high demand' } }), { status: 503 });
   const claudeSse = () =>
@@ -514,7 +523,7 @@ check('ошибка внутри потока без HTTP-кода тоже ра
 // Подпись под переводом — единственный способ померить жалобу «долго».
 // Подобранный способ запоминается: иначе каждый перевод начинается с отказа.
 check('запомненный шаг есть в настройках по умолчанию', DEFAULTS.geminiThinkingStep, 0);
-check('подстраховка Claude включена по умолчанию', DEFAULTS.claudeWhenGeminiBusy, true);
+check('платная подстраховка Claude по умолчанию ВЫКЛЮЧЕНА', DEFAULTS.claudeWhenGeminiBusy, false);
 
 check('подпись: спросили по счёту', thinkingLabel(0, true), 'мысли: по счёту');
 check('подпись: спросили уровнем', thinkingLabel(1, true), 'мысли: уровень low');

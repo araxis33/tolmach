@@ -159,6 +159,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           geminiKey: msg.key,
           geminiModel: picked.translate,
           geminiReplyModel: picked.reply,
+          // Запас на случай перегрузки: по этим моделям лестница попыток пойдёт
+          // дальше, когда выбранная отвечает 503.
+          geminiAvailable: picked.available,
           // Модели сменились — подобранный способ ограничить размышления
           // к ним может не подойти, подбираем заново.
           geminiThinkingStep: 0

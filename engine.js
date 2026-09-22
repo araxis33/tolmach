@@ -19,9 +19,12 @@ export const DEFAULTS = {
   // запоминается, иначе каждый перевод начинался бы с заведомо лишнего отказа.
   geminiThinkingStep: 0,
   apiKey: '',
-  // Если бесплатный Gemini лёг (503 «высокий спрос»), доделать запрос через Claude,
-  // когда ключ Anthropic задан. Иначе расширение просто встаёт на время сбоя Google.
-  claudeWhenGeminiBusy: true,
+  // Подстраховка платным Claude, когда бесплатный Gemini лёг. ВЫКЛЮЧЕНА:
+  // на Gemini переходили именно ради «не платить», и молча тратить деньги нельзя.
+  claudeWhenGeminiBusy: false,
+  // Все пригодные модели ключа — их запоминает «Проверить». Когда одна модель
+  // отвечает 503 «перегружена», у соседней ёмкость своя, и она часто отвечает.
+  geminiAvailable: [],
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
   foreign: 'en',       // рабочий второй язык
@@ -353,9 +356,8 @@ export function fallbackBlockedReason(cfg, err, printed) {
   if (!(err instanceof TranslationError)) return SILENT;
   if (err.kind !== 'server' && err.kind !== 'rate') return SILENT;
   if (printed) return SILENT;
-  if (cfg.claudeWhenGeminiBusy === false) {
-    return 'Claude не подстраховал: галочка в Параметрах снята.';
-  }
+  // Выключенная подстраховка — обычное состояние, а не поломка: молчим о ней.
+  if (!cfg.claudeWhenGeminiBusy) return SILENT;
   if (!cfg.apiKey) {
     return 'Claude не подстраховал: в Параметрах не задан ключ Anthropic.';
   }
@@ -379,8 +381,23 @@ export function geminiAttempts(cfg, model) {
   const lighter = modelFor(cfg, 'translate');
   const list = [model, model];
   if (lighter && lighter !== model) list.push(lighter);
+  // Дальше — остальные модели ключа. У каждой своя ёмкость: когда свежая Flash
+  // отвечает 503 «перегружена», прошлое поколение обычно отвечает нормально.
+  // Это и есть бесплатный способ пережить всплеск спроса, без платного запасного.
+  // Пока «Проверить» не нажимали, списка моделей ключа нет — берём прошлое
+  // поколение вслепую. Не подойдёт — Google ответит «нет такой модели», и
+  // лестница пойдёт дальше без потери времени.
+  const tail = (cfg.geminiAvailable || []).length ? cfg.geminiAvailable : FREE_FALLBACK_MODELS;
+  for (const other of tail) {
+    if (list.length >= 5) break;
+    if (!other || list.includes(other)) continue;
+    list.push(other);
+  }
   return list;
 }
+
+/** Долгоживущие бесплатные модели — запас, когда список ключа ещё не собран. */
+export const FREE_FALLBACK_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
 const RETRYABLE = new Set(['server', 'rate', 'model']);
 
@@ -437,8 +454,18 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
       }
       if (!RETRYABLE.has(err.kind)) throw err;
       lastError = err;
-      if (i < attempts.length - 1) await pause(retryPause(err.kind, i), signal);
+      // Ждём только перед повтором ТОЙ ЖЕ модели: её перегрузка должна отпустить.
+      // Переход на другую модель ждать незачем — у неё своя ёмкость, и пауза
+      // тут только задержала бы перевод.
+      if (i < attempts.length - 1 && attempts[i + 1] === current) {
+        await pause(retryPause(err.kind, i), signal);
+      }
     }
+  }
+  // Перебрали все модели ключа и всё равно перегрузка — это не поломка настроек,
+  // и человеку надо сказать, что делать: подождать. Иначе он жмёт снова и снова.
+  if (lastError instanceof TranslationError && (lastError.kind === 'server' || lastError.kind === 'rate')) {
+    throw withReason(lastError, `Перебрал ${attempts.length} модели — заняты все. Обычно отпускает за пару минут.`);
   }
   throw lastError;
 }
