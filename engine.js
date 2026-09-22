@@ -408,6 +408,16 @@ const RETRYABLE = new Set(['server', 'rate', 'model']);
  */
 export const ANSWER_DEADLINE_MS = 30000;
 
+/**
+ * Сколько ждём ПЕРВЫЙ кусок ответа. Это и есть настоящая мера «занята ли
+ * модель»: пока она молчит, ждать нечего, а как только пошёл текст — пусть
+ * пишет сколько нужно. Переводу молчать почти не положено (обычная работа —
+ * полторы секунды), ответу дольше: у него разрешены размышления.
+ */
+export function firstByteDeadline(purpose) {
+  return purpose === 'reply' ? 12000 : 7000;
+}
+
 /** Причина отмены по сроку — с именем, по которому её узнают все проверки. */
 export function deadlineReason(ms) {
   const err = new Error(`Модель не ответила за ${Math.round(ms / 1000)} с.`);
@@ -420,21 +430,32 @@ export function isAbortError(err) {
   return !!err && (err.name === 'AbortError' || err.name === 'TimeoutError');
 }
 
-/** Тот же сигнал отмены, но со сроком: что позже — отмена человеком или срок. */
-export function withDeadline(signal, ms) {
-  if (typeof AbortController !== 'function') return signal;
+/**
+ * Сигнал отмены с двумя сроками: короткий — на молчание до первого куска,
+ * длинный — на весь ответ. `started()` зовётся, когда пришёл первый кусок:
+ * с этого мгновения молчание уже не считается, модель работает.
+ * Вернуть просто `signal` без сроков — случай старых сред без AbortController.
+ */
+export function withDeadline(signal, ms, firstMs) {
+  if (typeof AbortController !== 'function') return { signal, started: () => {} };
   const ctrl = new AbortController();
   // Имя обязано быть AbortError: fetch отдаёт наружу ИМЕННО эту причину, и по
   // имени её узнаёт isAbortError. С обычной Error в карточку уезжало слово
   // «deadline» вместо человеческого объяснения.
-  const timer = setTimeout(() => ctrl.abort(deadlineReason(ms)), ms);
-  const stop = () => clearTimeout(timer);
+  const timers = [setTimeout(() => ctrl.abort(deadlineReason(ms)), ms)];
+  if (firstMs && firstMs < ms) {
+    timers.push(setTimeout(() => ctrl.abort(deadlineReason(firstMs)), firstMs));
+  }
+  const started = () => {
+    if (timers.length > 1) clearTimeout(timers.pop());
+  };
+  const stop = () => timers.forEach(clearTimeout);
   ctrl.signal.addEventListener('abort', stop);
   if (signal) {
     if (signal.aborted) ctrl.abort(signal.reason);
     else signal.addEventListener('abort', () => ctrl.abort(signal.reason));
   }
-  return ctrl.signal;
+  return { signal: ctrl.signal, started };
 }
 
 /**
@@ -471,12 +492,19 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
       if (onDelta) onDelta(piece, full);
     };
     const askedThinking = thinkingConfigFor(current, purpose, thinkingStep) !== null;
+    // Короткий срок на молчание, длинный — на весь ответ. Занятая модель именно
+    // молчит: ждать её все 30 секунд значит держать человека впустую, когда
+    // соседняя ответила бы за полторы.
+    const watch = withDeadline(signal, ANSWER_DEADLINE_MS, firstByteDeadline(purpose));
     try {
       const res = await callGemini({
-        key: cfg.geminiKey, model: current, system, text, fence, maxTokens, purpose, thinkingStep, signal
+        key: cfg.geminiKey, model: current, system, text, fence, maxTokens, purpose, thinkingStep, signal: watch.signal
       });
       if (!res.ok) throw await readGeminiError(res);
-      const out = await readGeminiStream(res, relay);
+      const out = await readGeminiStream(res, (piece, full) => {
+        watch.started();
+        relay(piece, full);
+      });
       return { ...out, model: current, thinkingStep, how: thinkingLabel(thinkingStep, askedThinking) };
     } catch (raw) {
       // Молчание дольше срока — такая же занятость, как явное 503, и лечится так же:
@@ -572,7 +600,7 @@ async function callGemini({ key, model, system, text, fence, maxTokens, purpose,
   const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
   return fetch(url, {
     method: 'POST',
-    signal: withDeadline(signal, ANSWER_DEADLINE_MS),
+    signal,
     // Ключ в заголовке, а не в адресе: адреса оседают в журналах.
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify(buildGeminiBody({ system, text, fence, maxTokens, model, purpose, thinkingStep }))

@@ -35,6 +35,8 @@ import {
   retryPause,
   isAbortError,
   deadlineReason,
+  firstByteDeadline,
+  withDeadline,
   ANSWER_DEADLINE_MS,
   TranslationError
 } from './engine.js';
@@ -534,6 +536,19 @@ check('ошибка внутри потока без HTTP-кода тоже ра
   check('её узнаёт та же проверка', isAbortError(deadlineReason(30000)), true);
   check('и она объясняет себя словами', deadlineReason(30000).message, 'Модель не ответила за 30 с.');
   check('срок ожидания — 30 секунд', ANSWER_DEADLINE_MS, 30000);
+  // Занятая модель именно молчит. Ждать её 30 секунд, когда соседняя ответит за
+  // полторы, — это и есть «перевелось, но долго».
+  check('на молчание срок короче, и переводу он строже', [firstByteDeadline('translate'), firstByteDeadline('reply')], [7000, 12000]);
+  check('короткий срок и правда короче общего', firstByteDeadline('reply') < ANSWER_DEADLINE_MS, true);
+  {
+    const w = withDeadline(null, 30000, 40);
+    const aborted = new Promise((r) => w.signal.addEventListener('abort', () => r(w.signal.reason && w.signal.reason.name)));
+    check('молчание обрывает запрос по короткому сроку', await aborted, 'AbortError');
+    const w2 = withDeadline(null, 30000, 40);
+    w2.started();
+    await new Promise((r) => setTimeout(r, 120));
+    check('пошёл текст — короткий срок снят, работу не обрываем', w2.signal.aborted, false);
+  }
   check('на лимит ключа ждём дольше, чем на занятую модель',
     [retryPause('rate', 0) >= retryPause('model', 0), retryPause('server', 1)], [true, 3500]);
 
