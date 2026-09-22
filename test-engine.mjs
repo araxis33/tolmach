@@ -33,6 +33,8 @@ import {
   SILENT,
   claudeModelFor,
   retryPause,
+  isAbortError,
+  ANSWER_DEADLINE_MS,
   TranslationError
 } from './engine.js';
 
@@ -517,6 +519,37 @@ check('ошибка внутри потока без HTTP-кода тоже ра
   check('в подписи видно, кто выручил и почему', /выручил Claude/.test(out.how || ''), true);
   check('к Claude пошли только после всех попыток Gemini', seen, ['gemini', 'gemini', 'gemini', 'claude']);
 
+  globalThis.fetch = realFetch;
+}
+
+// ——— молчание и лимит ключа ————————————————————————————————————
+{
+  const rate = new TranslationError('Слишком часто.', 'rate');
+  const dead = { name: 'AbortError' };
+  check('прерванный запрос опознаётся по имени', [isAbortError(dead), isAbortError(new Error('x'))], [true, false]);
+  check('срок ожидания — 30 секунд', ANSWER_DEADLINE_MS, 30000);
+  check('на лимит ключа ждём дольше, чем на занятую модель',
+    [retryPause('rate', 0) >= retryPause('model', 0), retryPause('server', 1)], [true, 3500]);
+
+  const realFetch = globalThis.fetch;
+  const asked = [];
+  const tooMany = () => new Response(JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'quota' } }), { status: 429 });
+  globalThis.fetch = async (url) => {
+    asked.push(decodeURIComponent(String(url).match(/models\/([^:]+):/)[1]));
+    return tooMany();
+  };
+  let err = null;
+  try {
+    await replyStream({
+      text: 'gm',
+      context: {},
+      settings: { provider: 'gemini', geminiKey: 'k', geminiModel: 'lite-m', geminiReplyModel: 'flash-m', geminiAvailable: ['flash-m', 'lite-m', 'old-m'] }
+    });
+  } catch (e) {
+    err = e;
+  }
+  check('на 429 модели НЕ перебираются: квота общая на ключ', asked.length, 1);
+  check('и сказано, что это лимит ключа на минуту', /лимит ключа на минуту/.test(err && err.message), true);
   globalThis.fetch = realFetch;
 }
 

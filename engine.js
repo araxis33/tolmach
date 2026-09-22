@@ -402,6 +402,32 @@ export const FREE_FALLBACK_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'
 const RETRYABLE = new Set(['server', 'rate', 'model']);
 
 /**
+ * Сколько ждём ответа, прежде чем считать модель зависшей. Перегруженный
+ * бесплатный Gemini иногда принимает запрос и замолкает навсегда — без срока
+ * карточка «думает» бесконечно, и человек видит зависшее расширение.
+ */
+export const ANSWER_DEADLINE_MS = 30000;
+
+/** Прерванный запрос: браузеры зовут это по-разному, поэтому проверяем по имени. */
+export function isAbortError(err) {
+  return !!err && (err.name === 'AbortError' || err.name === 'TimeoutError');
+}
+
+/** Тот же сигнал отмены, но со сроком: что позже — отмена человеком или срок. */
+export function withDeadline(signal, ms) {
+  if (typeof AbortController !== 'function') return signal;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error('deadline')), ms);
+  const stop = () => clearTimeout(timer);
+  ctrl.signal.addEventListener('abort', stop);
+  if (signal) {
+    if (signal.aborted) ctrl.abort(signal.reason);
+    else signal.addEventListener('abort', () => ctrl.abort(signal.reason));
+  }
+  return ctrl.signal;
+}
+
+/**
  * Сколько ждать перед следующей попыткой. Перегрузка и квота проходят за
  * секунды, а не за миллисекунды: 800 мс были слишком коротким ожиданием, чтобы
  * пережить всплеск спроса на бесплатном тарифе. Остальные причины ждать не надо.
@@ -442,7 +468,13 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
       if (!res.ok) throw await readGeminiError(res);
       const out = await readGeminiStream(res, relay);
       return { ...out, model: current, thinkingStep, how: thinkingLabel(thinkingStep, askedThinking) };
-    } catch (err) {
+    } catch (raw) {
+      // Молчание дольше срока — такая же занятость, как явное 503, и лечится так же:
+      // следующей моделью. Без этого превращения наружу летел бы голый AbortError.
+      let err = raw;
+      if (!signal?.aborted && isAbortError(raw)) {
+        err = new TranslationError(`Модель ${current} молчала ${Math.round(ANSWER_DEADLINE_MS / 1000)} с.`, 'server');
+      }
       if (signal?.aborted || printed || !(err instanceof TranslationError)) throw err;
       // 400 на запросе с настройкой размышлений — пробуем следующий способ её задать
       // на той же модели: попытку не сжигаем и не ждём, ошибка мгновенная.
@@ -454,6 +486,10 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
       }
       if (!RETRYABLE.has(err.kind)) throw err;
       lastError = err;
+      // 429 — это не занятая модель, а исчерпанная квота КЛЮЧА: она общая на все
+      // модели. Перебирать их дальше бессмысленно и вредно — каждый лишний запрос
+      // только глубже загоняет в лимит. Останавливаемся сразу.
+      if (err.kind === 'rate') break;
       // Ждём только перед повтором ТОЙ ЖЕ модели: её перегрузка должна отпустить.
       // Переход на другую модель ждать незачем — у неё своя ёмкость, и пауза
       // тут только задержала бы перевод.
@@ -464,7 +500,10 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
   }
   // Перебрали все модели ключа и всё равно перегрузка — это не поломка настроек,
   // и человеку надо сказать, что делать: подождать. Иначе он жмёт снова и снова.
-  if (lastError instanceof TranslationError && (lastError.kind === 'server' || lastError.kind === 'rate')) {
+  if (lastError instanceof TranslationError && lastError.kind === 'rate') {
+    throw withReason(lastError, 'Это лимит ключа на минуту, общий для всех моделей. Подожди минуту.');
+  }
+  if (lastError instanceof TranslationError && lastError.kind === 'server') {
     throw withReason(lastError, `Перебрал ${attempts.length} модели — заняты все. Обычно отпускает за пару минут.`);
   }
   throw lastError;
@@ -523,7 +562,7 @@ async function callGemini({ key, model, system, text, fence, maxTokens, purpose,
   const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
   return fetch(url, {
     method: 'POST',
-    signal,
+    signal: withDeadline(signal, ANSWER_DEADLINE_MS),
     // Ключ в заголовке, а не в адресе: адреса оседают в журналах.
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify(buildGeminiBody({ system, text, fence, maxTokens, model, purpose, thinkingStep }))
