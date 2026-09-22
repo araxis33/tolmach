@@ -34,6 +34,7 @@ import {
   claudeModelFor,
   retryPause,
   isAbortError,
+  deadlineReason,
   ANSWER_DEADLINE_MS,
   TranslationError
 } from './engine.js';
@@ -527,6 +528,11 @@ check('ошибка внутри потока без HTTP-кода тоже ра
   const rate = new TranslationError('Слишком часто.', 'rate');
   const dead = { name: 'AbortError' };
   check('прерванный запрос опознаётся по имени', [isAbortError(dead), isAbortError(new Error('x'))], [true, false]);
+  // fetch отдаёт наружу ИМЕННО эту причину: с обычной Error в карточку уезжало
+  // слово «deadline» вместо объяснения. Имя обязано быть AbortError.
+  check('причина отмены по сроку носит имя AbortError', deadlineReason(30000).name, 'AbortError');
+  check('её узнаёт та же проверка', isAbortError(deadlineReason(30000)), true);
+  check('и она объясняет себя словами', deadlineReason(30000).message, 'Модель не ответила за 30 с.');
   check('срок ожидания — 30 секунд', ANSWER_DEADLINE_MS, 30000);
   check('на лимит ключа ждём дольше, чем на занятую модель',
     [retryPause('rate', 0) >= retryPause('model', 0), retryPause('server', 1)], [true, 3500]);

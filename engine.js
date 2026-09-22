@@ -408,6 +408,13 @@ const RETRYABLE = new Set(['server', 'rate', 'model']);
  */
 export const ANSWER_DEADLINE_MS = 30000;
 
+/** Причина отмены по сроку — с именем, по которому её узнают все проверки. */
+export function deadlineReason(ms) {
+  const err = new Error(`Модель не ответила за ${Math.round(ms / 1000)} с.`);
+  err.name = 'AbortError';
+  return err;
+}
+
 /** Прерванный запрос: браузеры зовут это по-разному, поэтому проверяем по имени. */
 export function isAbortError(err) {
   return !!err && (err.name === 'AbortError' || err.name === 'TimeoutError');
@@ -417,7 +424,10 @@ export function isAbortError(err) {
 export function withDeadline(signal, ms) {
   if (typeof AbortController !== 'function') return signal;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new Error('deadline')), ms);
+  // Имя обязано быть AbortError: fetch отдаёт наружу ИМЕННО эту причину, и по
+  // имени её узнаёт isAbortError. С обычной Error в карточку уезжало слово
+  // «deadline» вместо человеческого объяснения.
+  const timer = setTimeout(() => ctrl.abort(deadlineReason(ms)), ms);
   const stop = () => clearTimeout(timer);
   ctrl.signal.addEventListener('abort', stop);
   if (signal) {
