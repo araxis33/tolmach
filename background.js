@@ -12,6 +12,8 @@ import {
   providerOf,
   listGeminiModels,
   pickGeminiModels,
+  listGroqModels,
+  pickGroqModels,
   TranslationError
 } from './engine.js';
 
@@ -172,6 +174,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
     })();
     return true; // ответ придёт позже
+  }
+  // Ключ Groq проверяем так же — списком моделей; лучшая сразу сохраняется.
+  if (msg?.type === 'groq-models') {
+    (async () => {
+      try {
+        const picked = pickGroqModels(await listGroqModels(msg.key));
+        await chrome.storage.local.set({ groqKey: msg.key, groqModel: picked.model, groqAvailable: picked.available });
+        sendResponse({ ok: true, ...picked });
+      } catch (err) {
+        sendResponse({ ok: false, message: describeError(err) });
+      }
+    })();
+    return true;
   }
   return false;
 });

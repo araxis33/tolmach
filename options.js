@@ -39,6 +39,8 @@ const FIELDS = {
   geminiReplyModel: { el: () => $('geminiReplyModel'), prop: 'value' },
   showTweetButton: { el: () => $('showTweetButton'), prop: 'checked' },
   claudeWhenGeminiBusy: { el: () => $('claudeWhenGeminiBusy'), prop: 'checked' },
+  groqKey: { el: () => $('groqKey'), prop: 'value' },
+  groqWhenGeminiBusy: { el: () => $('groqWhenGeminiBusy'), prop: 'checked' },
   apiKey: { el: () => $('apiKey'), prop: 'value' },
   native: { el: () => $('native'), prop: 'value' },
   foreign: { el: () => $('foreign'), prop: 'value' },
@@ -101,6 +103,13 @@ async function init() {
     $('geminiReveal').textContent = hidden ? 'Скрыть' : 'Показать';
   });
   $('geminiTest').addEventListener('click', testGemini);
+  $('groqReveal').addEventListener('click', () => {
+    const box = $('groqKey');
+    const hidden = box.type === 'password';
+    box.type = hidden ? 'text' : 'password';
+    $('groqReveal').textContent = hidden ? 'Скрыть' : 'Показать';
+  });
+  $('groqTest').addEventListener('click', testGroq);
 
   await paintSpend();
   $('balance').addEventListener('input', () => setTimeout(paintSpend, 250));
@@ -327,7 +336,7 @@ function paintProvider() {
   const needsClaudeKey = claude || $('claudeWhenGeminiBusy').checked;
   $('claudeCard').classList.toggle('hidden', !needsClaudeKey);
   $('moneyCard').classList.toggle('hidden', !needsClaudeKey);
-  $('geminiCard').classList.toggle('hidden', claude);
+  $('geminiCard').classList.toggle('hidden', claude || $('provider').value === 'groq');
 }
 
 function fillGeminiModels(ids) {
@@ -374,6 +383,41 @@ async function testGemini() {
       kind
     );
   });
+}
+
+// Ключ Groq: список моделей (ключ принят, выбрана лучшая) и настоящий перевод,
+// если Groq выбран основным. Как запасной он проверяется одним списком.
+async function testGroq() {
+  const key = $('groqKey').value.trim();
+  if (!key) {
+    setGroqStatus('Сначала вставь ключ.', 'bad');
+    return;
+  }
+  $('groqTest').disabled = true;
+  setGroqStatus('Проверяю ключ…', '');
+  const listed = await chrome.runtime.sendMessage({ type: 'groq-models', key }).catch(() => null);
+  if (!listed || !listed.ok) {
+    $('groqTest').disabled = false;
+    setGroqStatus(listed ? listed.message : 'Связь с расширением оборвалась. Попробуй ещё раз.', 'bad');
+    return;
+  }
+  if ($('provider').value !== 'groq') {
+    $('groqTest').disabled = false;
+    setGroqStatus(`Ключ принят. Запасная модель — ${listed.model}. Включится сама, когда Gemini перегружен.`, 'ok');
+    return;
+  }
+  setGroqStatus('Ключ принят. Пробую перевести…', '');
+  translateProbe((text, kind) => {
+    $('groqTest').disabled = false;
+    setGroqStatus(kind === 'ok' ? `${text} Модель — ${listed.model}.` : text, kind);
+  });
+}
+
+function setGroqStatus(text, kind) {
+  const box = $('groqStatus');
+  box.textContent = text;
+  box.className = `status ${kind}`;
+  box.classList.remove('hidden');
 }
 
 function setGeminiStatus(text, kind) {

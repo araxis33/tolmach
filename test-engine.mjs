@@ -38,6 +38,14 @@ import {
   firstByteDeadline,
   withDeadline,
   ANSWER_DEADLINE_MS,
+  pickGroqModels,
+  canUseGroq,
+  parseGroqChunk,
+  buildGroqBody,
+  groqErrorFrom,
+  groqAttempts,
+  GROQ_FALLBACK_MODELS,
+  translateStream,
   TranslationError
 } from './engine.js';
 
@@ -582,6 +590,71 @@ check('платная подстраховка Claude по умолчанию В
 check('подпись: спросили по счёту', thinkingLabel(0, true), 'мысли: по счёту');
 check('подпись: спросили уровнем', thinkingLabel(1, true), 'мысли: уровень low');
 check('подпись: не спрашивали вовсе', thinkingLabel(2, false), 'мысли: как решит модель');
+
+// ——— Groq: бесплатный запасной, когда Gemini перегружен (23.09.2026) ———
+{
+  // Список моделей его ключа на 23.09: речь, модерация и арабский не годятся.
+  const ids = ['allam-2-7b', 'canopylabs/orpheus-v1-english', 'meta-llama/llama-prompt-guard-2-86m',
+    'openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'openai/gpt-oss-safeguard-20b', 'qwen/qwen3.8-27b', 'whisper-large-v3'];
+  const picked = pickGroqModels(ids);
+  check('Groq: лучшая модель — gpt-oss-120b', picked.model, 'openai/gpt-oss-120b');
+  check('Groq: в запасе только текстовые, по качеству', picked.available,
+    ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b']);
+  check('Groq: пустой список — берём прошитый запас', pickGroqModels([]).model, GROQ_FALLBACK_MODELS[0]);
+  check('Groq: попыток не больше трёх, без повторов',
+    groqAttempts({ groqModel: 'a', groqAvailable: ['a', 'b', 'c', 'd'] }), ['a', 'b', 'c']);
+
+  check('Groq-подстраховка включена по умолчанию: она бесплатная', DEFAULTS.groqWhenGeminiBusy, true);
+  const busyErr = new TranslationError('Gemini сейчас не отвечает (503).', 'server');
+  check('Groq выручает при перегрузке', canUseGroq({ groqKey: 'g', groqWhenGeminiBusy: true }, busyErr, false), true);
+  check('Groq не выручает без ключа', canUseGroq({ groqKey: '', groqWhenGeminiBusy: true }, busyErr, false), false);
+  check('Groq не выручает, если текст уже печатается', canUseGroq({ groqKey: 'g' }, busyErr, true), false);
+  check('Groq не лечит неверный ключ Gemini',
+    canUseGroq({ groqKey: 'g' }, new TranslationError('Ключ Gemini не принят.', 'auth'), false), false);
+
+  check('Groq: провайдер groq берёт свой ключ', activeKey({ provider: 'groq', groqKey: 'gsk_x', geminiKey: 'g' }), 'gsk_x');
+  check('Groq: модель по выбору', modelFor({ provider: 'groq', groqModel: 'qwen/qwen3.8-27b' }, 'translate'), 'qwen/qwen3.8-27b');
+
+  const body = buildGroqBody({ system: 'S', text: 'hi', fence: 'F', maxTokens: 16000, model: 'openai/gpt-oss-120b' });
+  check('Groq: gpt-oss думает мало — для перевода это задержка', body.reasoning_effort, 'low');
+  check('Groq: предел выхода не больше 8192', body.max_tokens, 8192);
+  check('Groq: qwen без поля reasoning_effort',
+    'reasoning_effort' in buildGroqBody({ system: 'S', text: 'hi', fence: 'F', maxTokens: 100, model: 'qwen/qwen3.8-27b' }), false);
+
+  check('Groq: кусок потока даёт текст', parseGroqChunk({ choices: [{ delta: { content: 'При' } }] }).text, 'При');
+  check('Groq: расход из x_groq',
+    parseGroqChunk({ choices: [{ delta: {} }], x_groq: { usage: { prompt_tokens: 7, completion_tokens: 3 } } }).usage.output, 3);
+  check('Groq: 429 — это лимит, не перегрузка', groqErrorFrom(429, { message: 'Rate limit' }).kind, 'rate');
+  check('Groq: 401 — ключ', groqErrorFrom(401, null).kind, 'auth');
+
+  // Сквозной путь: Gemini лежит с 503 на всех моделях — перевод доделывает Groq.
+  const realFetch = globalThis.fetch;
+  const hosts = [];
+  const groqSse = (text) => new Response(
+    `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n\n`, { status: 200 });
+  const geminiBusy = () => new Response(JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'high demand' } }), { status: 503 });
+  globalThis.fetch = async (url) => {
+    const host = new URL(String(url)).host;
+    hosts.push(host);
+    return host === 'api.groq.com' ? groqSse('Привет') : geminiBusy();
+  };
+  const settings = { ...DEFAULTS, geminiKey: 'k', geminiModel: 'lite-m', geminiAvailable: ['lite-m'],
+    groqKey: 'gsk_x', groqModel: 'openai/gpt-oss-120b', native: 'ru', foreign: 'en' };
+  const out = await translateStream({ text: 'Hello there, friend', settings });
+  check('Gemini лёг — перевод сделал Groq', [out.raw.trim(), out.model], ['Привет', 'openai/gpt-oss-120b']);
+  check('в подписи видно, что выручил Groq', /выручил Groq/.test(out.how || ''), true);
+  check('Groq спрошен один раз, после Gemini', hosts.filter((h) => h === 'api.groq.com').length, 1);
+
+  // И наоборот: Groq выключен галочкой — ошибка Gemini уходит как была.
+  let err = null;
+  try {
+    await translateStream({ text: 'Hello there, friend', settings: { ...settings, groqWhenGeminiBusy: false } });
+  } catch (e) {
+    err = e;
+  }
+  check('галочка снята — Groq не зовётся', /high demand|не отвечает/.test(err && err.message), true);
+  globalThis.fetch = realFetch;
+}
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);

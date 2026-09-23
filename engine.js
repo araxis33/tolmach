@@ -1,10 +1,11 @@
-// Толмач — движок перевода поверх двух моделей: Gemini (бесплатный ключ Google)
-// и Claude (платный ключ Anthropic). Вызывается только из service worker:
-// ключ никогда не попадает в страницу.
+// Толмач — движок перевода поверх трёх поставщиков: Gemini (бесплатный ключ Google),
+// Groq (тоже бесплатный — запасной, когда Gemini перегружен) и Claude (платный ключ
+// Anthropic). Вызывается только из service worker: ключ никогда не попадает в страницу.
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const GROQ_BASE = 'https://api.groq.com/openai/v1';
 
 export const DEFAULTS = {
   // Gemini по умолчанию: у Google есть бесплатная квота, у Anthropic — нет.
@@ -25,6 +26,13 @@ export const DEFAULTS = {
   // Все пригодные модели ключа — их запоминает «Проверить». Когда одна модель
   // отвечает 503 «перегружена», у соседней ёмкость своя, и она часто отвечает.
   geminiAvailable: [],
+  // Groq — второй бесплатный поставщик. Нужен потому, что бесплатный Gemini
+  // ложится с 503 «high demand» целыми днями (22–23.09.2026 так вставал Толмач).
+  // Подстраховка им включена по умолчанию: она ничего не стоит.
+  groqKey: '',
+  groqModel: '',
+  groqAvailable: [],
+  groqWhenGeminiBusy: true,
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
   foreign: 'en',       // рабочий второй язык
@@ -264,16 +272,19 @@ function buildBody({ model, system, text, maxTokens, fence, effort = 'low' }) {
 // ——— какой ключ и какая модель ——————————————————————————————————
 
 export function providerOf(cfg) {
-  return cfg.provider === 'claude' ? 'claude' : 'gemini';
+  if (cfg.provider === 'claude' || cfg.provider === 'groq') return cfg.provider;
+  return 'gemini';
 }
 
 /** Ключ выбранного провайдера или пустая строка. */
 export function activeKey(cfg) {
-  return providerOf(cfg) === 'claude' ? cfg.apiKey || '' : cfg.geminiKey || '';
+  const p = providerOf(cfg);
+  return p === 'claude' ? cfg.apiKey || '' : p === 'groq' ? cfg.groqKey || '' : cfg.geminiKey || '';
 }
 
 /** Модель под задачу: ответы пишутся на своей, перевод и страница — на основной. */
 export function modelFor(cfg, purpose) {
+  if (providerOf(cfg) === 'groq') return cfg.groqModel || GROQ_FALLBACK_MODELS[0];
   if (providerOf(cfg) === 'claude') {
     return purpose === 'reply' ? cfg.replyModel || cfg.model : cfg.model;
   }
@@ -285,7 +296,7 @@ export function modelFor(cfg, purpose) {
 function requireKey(cfg) {
   if (activeKey(cfg)) return;
   throw new TranslationError(
-    providerOf(cfg) === 'claude' ? 'Не задан ключ Anthropic.' : 'Не задан ключ Gemini.',
+    { claude: 'Не задан ключ Anthropic.', groq: 'Не задан ключ Groq.' }[providerOf(cfg)] || 'Не задан ключ Gemini.',
     'nokey'
   );
 }
@@ -297,6 +308,9 @@ function requireKey(cfg) {
 async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, effort, onDelta }) {
   requireKey(cfg);
   const model = modelFor(cfg, purpose);
+  if (providerOf(cfg) === 'groq') {
+    return runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, onDelta });
+  }
   if (providerOf(cfg) === 'gemini') {
     // Пока на экран ничего не ушло, работу можно доделать на другом провайдере.
     // Как только первый кусок напечатан — нельзя: текст задвоится.
@@ -307,8 +321,19 @@ async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, 
     };
     try {
       return await runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta: relay });
-    } catch (err) {
-      if (signal?.aborted) throw err;
+    } catch (geminiErr) {
+      if (signal?.aborted) throw geminiErr;
+      let err = geminiErr;
+      // Сначала бесплатный Groq: у него своя ёмкость, и лёг он вряд ли тогда же.
+      if (canUseGroq(cfg, err, printed)) {
+        try {
+          const out = await runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, onDelta: relay });
+          return { ...out, how: `выручил Groq — ${geminiErr.message}` };
+        } catch (groqErr) {
+          if (signal?.aborted || printed) throw groqErr;
+          err = withReason(geminiErr, `Groq тоже не смог: ${groqErr.message}`);
+        }
+      }
       const blocked = fallbackBlockedReason(cfg, err, printed);
       // Молча пропускаем только то, где подстраховка и не должна была включиться.
       if (blocked) throw blocked === SILENT ? err : withReason(err, blocked);
@@ -362,6 +387,18 @@ export function fallbackBlockedReason(cfg, err, printed) {
     return 'Claude не подстраховал: в Параметрах не задан ключ Anthropic.';
   }
   return null;
+}
+
+/**
+ * Можно ли доделать через Groq. Тот же принцип, что у Claude: только когда Gemini
+ * именно занят или упёрся в квоту и на экран ещё ничего не ушло. Но галочка
+ * по умолчанию включена — Groq бесплатный, тратить нечего.
+ */
+export function canUseGroq(cfg, err, printed) {
+  if (!(err instanceof TranslationError)) return false;
+  if (err.kind !== 'server' && err.kind !== 'rate') return false;
+  if (printed) return false;
+  return !!cfg.groqKey && cfg.groqWhenGeminiBusy !== false;
 }
 
 /** Дописать к ошибке вторую строку — причину, а не заменить первую. */
@@ -757,6 +794,158 @@ export async function listGeminiModels(key, signal) {
   return (body.models || [])
     .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
     .map((m) => m.name);
+}
+
+// ——— Groq ——————————————————————————————————————————————————————
+
+/**
+ * Модели на случай, когда «Проверить» ещё не нажимали. Настоящий список
+ * берётся у ключа: у Groq модели приходят и уходят, прошивать их опасно.
+ */
+export const GROQ_FALLBACK_MODELS = ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b'];
+
+// Порядок предпочтения для русского и английского. Замер 23.09.2026 на его ключе:
+// все отвечают за ~0,5 с, но gpt-oss-120b переводит точнее всех, а qwen в одной
+// фразе исказил смысл («раздал держателей» → «dumped 50% of holders»).
+// Речь, модерация и «агенты» не годятся вовсе.
+const GROQ_PREFERENCE = [/gpt-oss-120b/, /kimi-k2/, /qwen/, /llama-4-maverick/, /llama-3\.3-70b/,
+  /gpt-oss-20b/, /llama-4-scout/];
+const GROQ_UNUSABLE = /whisper|guard|tts|playai|orpheus|prompt|compound|embed|allam|safeguard/;
+
+export function pickGroqModels(ids) {
+  const usable = ids.map(String).filter((id) => !GROQ_UNUSABLE.test(id));
+  const rank = (id) => {
+    const i = GROQ_PREFERENCE.findIndex((re) => re.test(id));
+    return i === -1 ? GROQ_PREFERENCE.length : i;
+  };
+  const sorted = usable.filter((id) => rank(id) < GROQ_PREFERENCE.length).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  return { model: sorted[0] || GROQ_FALLBACK_MODELS[0], available: sorted };
+}
+
+/** Модели, которые видит ключ Groq. Заодно это и проверка ключа. */
+export async function listGroqModels(key, signal) {
+  const res = await fetch(`${GROQ_BASE}/models`, { signal, headers: { authorization: `Bearer ${key}` } });
+  if (!res.ok) throw await readGroqError(res);
+  const body = await res.json();
+  return (body.data || []).filter((m) => m.active !== false).map((m) => m.id);
+}
+
+export function groqErrorFrom(status, error) {
+  const said = error && error.message ? ` Groq: «${String(error.message).slice(0, 160)}»` : '';
+  if (status === 401 || status === 403) return new TranslationError('Ключ Groq не принят. Проверь его в настройках Толмача.', 'auth');
+  if (status === 429) return new TranslationError(`Лимит бесплатного Groq на минуту исчерпан.${said}`, 'rate');
+  if (status === 404) return new TranslationError(`Этой модели Groq больше нет. Нажми «Проверить» у ключа Groq.${said}`, 'model');
+  if (status >= 500 || status === 0) return new TranslationError(`Groq сейчас не отвечает (${status || 'сеть'}).${said}`, 'server');
+  return new TranslationError(`Groq не принял запрос (${status}).${said}`, 'argument');
+}
+
+async function readGroqError(res) {
+  let error = null;
+  try {
+    error = (await res.json()).error;
+  } catch {
+    // тело не JSON — хватит кода
+  }
+  return groqErrorFrom(res.status, error);
+}
+
+export function buildGroqBody({ system, text, fence, maxTokens, model }) {
+  const body = {
+    model,
+    stream: true,
+    // Бесплатный Groq ограничивает выход сильнее Gemini; 8 тысяч хватает и на страницу.
+    max_tokens: Math.min(maxTokens || 4096, 8192),
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: wrapSource(text, fence) }
+    ]
+  };
+  // gpt-oss рассуждает перед ответом; для перевода это только задержка.
+  if (/gpt-oss/.test(model)) body.reasoning_effort = 'low';
+  return body;
+}
+
+/** Один кусок потока в формате OpenAI: текст и, в последнем куске, расход. */
+export function parseGroqChunk(ev) {
+  const choice = (ev && ev.choices && ev.choices[0]) || null;
+  const text = (choice && choice.delta && typeof choice.delta.content === 'string' && choice.delta.content) || '';
+  const u = (ev && ev.x_groq && ev.x_groq.usage) || (ev && ev.usage) || null;
+  const usage = u ? { input: u.prompt_tokens || 0, output: u.completion_tokens || 0, cacheRead: 0, cacheWrite: 0 } : null;
+  return { text, usage, finish: (choice && choice.finish_reason) || '' };
+}
+
+async function readGroqStream(res, onDelta) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+  let usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let ev;
+      try {
+        ev = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (ev.error) throw groqErrorFrom(0, ev.error);
+      const chunk = parseGroqChunk(ev);
+      if (chunk.usage) usage = chunk.usage;
+      if (chunk.text) {
+        full += chunk.text;
+        if (onDelta) onDelta(chunk.text, full);
+      }
+    }
+  }
+  if (!full.trim()) throw new TranslationError('Пустой ответ от Groq.', 'empty');
+  return { text: full, usage };
+}
+
+/** Порядок моделей Groq: выбранная, потом остальные с ключа, не больше трёх. */
+export function groqAttempts(cfg) {
+  const list = [cfg.groqModel, ...((cfg.groqAvailable || []).length ? cfg.groqAvailable : GROQ_FALLBACK_MODELS)];
+  return [...new Set(list.filter(Boolean))].slice(0, 3);
+}
+
+async function runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, onDelta }) {
+  let lastError = null;
+  for (const model of groqAttempts(cfg)) {
+    let printed = false;
+    const watch = withDeadline(signal, ANSWER_DEADLINE_MS, firstByteDeadline(purpose));
+    try {
+      const res = await fetch(`${GROQ_BASE}/chat/completions`, {
+        method: 'POST',
+        signal: watch.signal,
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.groqKey}` },
+        body: JSON.stringify(buildGroqBody({ system, text, fence, maxTokens, model }))
+      });
+      if (!res.ok) throw await readGroqError(res);
+      const out = await readGroqStream(res, (piece, full) => {
+        watch.started();
+        printed = true;
+        if (onDelta) onDelta(piece, full);
+      });
+      return { ...out, model, how: out.how || 'Groq, бесплатно' };
+    } catch (raw) {
+      let err = raw;
+      if (!signal?.aborted && isAbortError(raw)) {
+        err = new TranslationError(`Модель ${model} молчала.`, 'server');
+      }
+      if (signal?.aborted || printed || !(err instanceof TranslationError)) throw err;
+      lastError = err;
+      // Как и у Gemini: лимит общий на ключ, перебор моделей его не лечит.
+      if (err.kind === 'rate' || err.kind === 'auth' || err.kind === 'argument') break;
+    }
+  }
+  throw lastError || new TranslationError('Groq не ответил.', 'server');
 }
 
 // Запрос к API Anthropic. Один на все режимы: меняется только системный промпт.

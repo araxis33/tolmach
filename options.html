@@ -23,6 +23,7 @@
         <span>Модель</span>
         <select id="provider">
           <option value="gemini">Gemini — бесплатно</option>
+          <option value="groq">Groq — бесплатно, быстро</option>
           <option value="claude">Claude — платно, ключ Anthropic</option>
         </select>
       </label>
@@ -38,7 +39,7 @@
       браузере и уходит напрямую в Google — больше никуда.
     </p>
     <div class="row">
-      <input type="password" id="geminiKey" placeholder="AIza…" autocomplete="off" spellcheck="false">
+      <input type="password" id="geminiKey" placeholder="AIza… или AQ.…" autocomplete="off" spellcheck="false">
       <button class="ghost" id="geminiReveal" title="Показать ключ">Показать</button>
       <button class="primary" id="geminiTest">Проверить</button>
     </div>
@@ -68,6 +69,31 @@
       вообще — тогда запрос доделает Claude <b>за деньги</b>, по ключу Anthropic ниже.
       По умолчанию выключена. Под переводом будет видно, что выручил Claude, а трата
       попадёт в счётчик денег.
+    </p>
+  </section>
+
+  <section class="card" id="groqCard">
+    <h2>Ключ Groq — бесплатный запасной</h2>
+    <p class="help">
+      Бесплатный, без карты. Открой
+      <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys</a>,
+      нажми <b>Create API Key</b>, скопируй ключ (начинается с <b>gsk_</b>) и вставь сюда.
+      Хранится только в этом браузере и уходит напрямую в Groq.
+    </p>
+    <div class="row">
+      <input type="password" id="groqKey" placeholder="gsk_…" autocomplete="off" spellcheck="false">
+      <button class="ghost" id="groqReveal" title="Показать ключ">Показать</button>
+      <button class="primary" id="groqTest">Проверить</button>
+    </div>
+    <div class="status hidden" id="groqStatus"></div>
+    <label class="check">
+      <input type="checkbox" id="groqWhenGeminiBusy">
+      <span>Если Gemini перегружен — доделать через Groq (бесплатно)</span>
+    </label>
+    <p class="help">
+      Включено по умолчанию: ничего не стоит. Когда Gemini отвечает «high demand»,
+      перевод сразу доделает Groq, и под ним будет подпись «выручил Groq».
+      Можно и совсем перейти на Groq — выбери его в «Чем переводить».
     </p>
   </section>
 
