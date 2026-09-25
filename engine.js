@@ -1328,7 +1328,7 @@ export function buildReplySystem({ persona, fence, glossLang }) {
     '2. Print only the TOP-3 from V3: the reply for the author to answer, the reply for likes from third parties, the reply that sticks. Three different types, three different replies. This replaces V3\'s «СТРУКТУРА ВЫВОДА» and its «выдавай все 11».',
     `3. LANGUAGE. The user pastes the reply straight into the thread, so write each @@n@@ reply in the language of THE TEXT TO REPLY TO. V3\'s «на русском» is the ${glossName} version: each @@RUn@@ gives the same reply in ${glossName}, and it must obey V3 just as strictly. If the post is already in ${glossName}, both are the same text.`,
     '4. Count characters yourself; there is no Python here. Stay inside the V3 corridor and under the length of the original post.',
-    '5. Start each @@RUn@@ with its slot in a few words: «Для ответа автора:», «Для лайков:», «Запомнится:». Only the @@RUn@@ gets that label, never the @@n@@ reply.',
+    '5. Keep the order: @@1@@ is the reply for the author to answer, @@2@@ the one for likes, @@3@@ the one that sticks. The card labels them itself, so write no labels.',
     '',
     'STANDING GUARDRAILS, all consistent with V3. YOUR JOB IS TO MAKE THEIR POINT STRONGER. DO NOT ARGUE: the only pushback that exists is V3 type 11, a calm fix of a real factual error. Tacking on the caveat, the risk, the exception or the devil\'s-advocate angle is not a contribution. NO JABS, NO IRONY, NO TEASING at the author. AT MOST ONE OF THE THREE MAY ASK ANYTHING. Never invent facts, numbers, names, events or personal experience the user did not give you. Before answering, read the three as the author: if any of them makes the original look weaker, rewrite it.',
     '',
@@ -1337,15 +1337,15 @@ export function buildReplySystem({ persona, fence, glossLang }) {
     '@@1@@',
     'reply for the author to answer',
     '@@RU1@@',
-    `Для ответа автора: the same in ${glossName}`,
+    `the same in ${glossName}`,
     '@@2@@',
     'reply for likes',
     '@@RU2@@',
-    `Для лайков: the same in ${glossName}`,
+    `the same in ${glossName}`,
     '@@3@@',
     'reply that sticks',
     '@@RU3@@',
-    `Запомнится: the same in ${glossName}`
+    `the same in ${glossName}`
   ].join('\n');
 }
 
