@@ -11,6 +11,7 @@ import {
   parseReplies,
   composeReplyInput,
   buildReplySystem,
+  REPLY_PROMPT_V3,
   priceOf,
   formatCost,
   DEFAULTS,
@@ -280,14 +281,20 @@ check(
 );
 
 check(
-  'вариант «тот, кто спорит» объявлен несуществующим',
-  SYS.includes('the reply that pushes back does not exist here'),
+  'возражать можно только типом 11 V3 — при настоящей фактической ошибке',
+  SYS.includes('the only pushback that exists is V3 type 11'),
   true
 );
 
 check(
-  'искренняя радость разрешена, мотивационный плакат — нет',
-  SYS.includes('Being glad for someone is welcome') && SYS.includes('fit on a mug'),
+  'промпт пользователя V3 вшит целиком, от роли до финальной проверки',
+  SYS.includes(REPLY_PROMPT_V3) && REPLY_PROMPT_V3.includes('## РОЛЬ') && REPLY_PROMPT_V3.includes('ФИНАЛЬНАЯ ПРОВЕРКА (12 пунктов'),
+  true
+);
+
+check(
+  'наружу только ТОП-3: 11 вариантов модель держит при себе',
+  SYS.includes('Print only the TOP-3') && SYS.includes('SILENTLY') && SYS.includes('@@3@@') && !SYS.includes('@@4@@'),
   true
 );
 
