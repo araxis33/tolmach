@@ -382,7 +382,7 @@ check('пустая модель Gemini в настройках не ломае�
 // Долгие паузы при переводе — это «размышления» модели. Переводу они не нужны.
 check('переводу думать нечего', thinkingBudgetFor('gemini-2.5-flash-lite', 'translate'), 0);
 check('страница переводится без размышлений', thinkingBudgetFor('gemini-2.5-flash', 'page'), 0);
-check('ответу бюджет мыслей конечный', thinkingBudgetFor('gemini-2.5-flash', 'reply'), 2048);
+check('ответу бюджет мыслей конечный', thinkingBudgetFor('gemini-2.5-flash', 'reply'), 6144);
 check('не-flash моделям поле не шлём', thinkingBudgetFor('gemini-2.5-pro', 'translate'), null);
 check('пустая модель не ломает расчёт', thinkingBudgetFor('', 'translate'), null);
 
@@ -391,7 +391,7 @@ check('пустая модель не ломает расчёт', thinkingBudget
   const t = body({ model: 'gemini-2.5-flash-lite', purpose: 'translate' });
   check('перевод уходит с нулевым бюджетом мыслей', t.generationConfig.thinkingConfig.thinkingBudget, 0);
   const r = body({ model: 'gemini-2.5-flash', purpose: 'reply' });
-  check('ответ уходит с конечным бюджетом мыслей', r.generationConfig.thinkingConfig.thinkingBudget, 2048);
+  check('ответ уходит с конечным бюджетом мыслей', r.generationConfig.thinkingConfig.thinkingBudget, 6144);
   const p = body({ model: 'gemini-2.5-pro', purpose: 'translate' });
   check('на pro поля thinkingConfig нет', p.generationConfig.thinkingConfig, undefined);
 
@@ -553,7 +553,7 @@ check('ошибка внутри потока без HTTP-кода тоже ра
   check('срок ожидания — 30 секунд', ANSWER_DEADLINE_MS, 30000);
   // Занятая модель именно молчит. Ждать её 30 секунд, когда соседняя ответит за
   // полторы, — это и есть «перевелось, но долго».
-  check('на молчание срок короче, и переводу он строже', [firstByteDeadline('translate'), firstByteDeadline('reply')], [7000, 12000]);
+  check('на молчание срок короче, и переводу он строже', [firstByteDeadline('translate'), firstByteDeadline('reply')], [7000, 25000]);
   check('короткий срок и правда короче общего', firstByteDeadline('reply') < ANSWER_DEADLINE_MS, true);
   {
     const w = withDeadline(null, 30000, 40);

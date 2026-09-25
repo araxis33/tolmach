@@ -452,7 +452,8 @@ export const ANSWER_DEADLINE_MS = 30000;
  * полторы секунды), ответу дольше: у него разрешены размышления.
  */
 export function firstByteDeadline(purpose) {
-  return purpose === 'reply' ? 12000 : 7000;
+  // 25.09: ответ по промпту V3 молча перебирает 11 вариантов — думает дольше, 12 с не хватало
+  return purpose === 'reply' ? 25000 : 7000;
 }
 
 /** Причина отмены по сроку — с именем, по которому её узнают все проверки. */
@@ -595,7 +596,7 @@ async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, 
 export function thinkingBudgetFor(model, purpose, skip) {
   if (skip) return null;
   if (!/flash/i.test(String(model || ''))) return null;
-  return purpose === 'reply' ? 2048 : 0;
+  return purpose === 'reply' ? 6144 : 0;   // 25.09: 2048 не хватало на 11 вариантов V3
 }
 
 /**
