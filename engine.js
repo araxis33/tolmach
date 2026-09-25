@@ -850,7 +850,7 @@ async function readGroqError(res) {
   return groqErrorFrom(res.status, error);
 }
 
-export function buildGroqBody({ system, text, fence, maxTokens, model }) {
+export function buildGroqBody({ system, text, fence, maxTokens, model, purpose }) {
   const body = {
     model,
     stream: true,
@@ -862,7 +862,8 @@ export function buildGroqBody({ system, text, fence, maxTokens, model }) {
     ]
   };
   // gpt-oss рассуждает перед ответом; для перевода это только задержка.
-  if (/gpt-oss/.test(model)) body.reasoning_effort = 'low';
+  // Ответу по промпту V3 (11 вариантов молча, выбрать ТОП-3) — средне (25.09).
+  if (/gpt-oss/.test(model)) body.reasoning_effort = purpose === 'reply' ? 'medium' : 'low';
   return body;
 }
 
@@ -926,7 +927,7 @@ async function runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, o
         method: 'POST',
         signal: watch.signal,
         headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.groqKey}` },
-        body: JSON.stringify(buildGroqBody({ system, text, fence, maxTokens, model }))
+        body: JSON.stringify(buildGroqBody({ system, text, fence, maxTokens, model, purpose }))
       });
       if (!res.ok) throw await readGroqError(res);
       const out = await readGroqStream(res, (piece, full) => {
