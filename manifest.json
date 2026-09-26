@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Толмач",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Переводчик RU⇄EN и помощник с ответами в X: бесплатно на Gemini или Groq, или на Claude. Выдели текст — получи перевод, который звучит как родной.",
   "permissions": [
     "storage",
@@ -12,7 +12,8 @@
   "host_permissions": [
     "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "https://api.groq.com/*"
+    "https://api.groq.com/*",
+    "https://pbs.twimg.com/*"
   ],
   "background": {
     "service_worker": "background.js",

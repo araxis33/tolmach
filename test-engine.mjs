@@ -8,7 +8,7 @@ import {
   unpackSegments,
   makeFence,
   wrapSource,
-  parseReplies,
+  parseV3Output,
   composeReplyInput,
   buildReplySystem,
   REPLY_PROMPT_V3,
@@ -163,58 +163,37 @@ check(
 );
 
 
-// ——— варианты ответа ——————————————————————————————————————————
+// ——— вывод V3 в карточке ———————————————————————————————————————
+// 26.09: обёртки нет, модель печатает «СТРУКТУРУ ВЫВОДА» самого V3.
 const NL2 = String.fromCharCode(10);
-const REPLIES = [
-  '@@1@@', 'nice, that lines up with what I see',
-  '@@RU1@@', 'славно, сходится с тем, что вижу',
-  '@@2@@', 'the epoch closed 12% under target',
-  '@@RU2@@', 'эпоха закрылась на 12% ниже цели',
-  '@@3@@', 'been there, took me a week',
-  '@@RU3@@', 'знакомо, у меня ушла неделя'
+const V3_OUT = [
+  '```',
+  'КЛАССИФИКАЦИЯ: крипто | casual | фаундер | анонс',
+  'КЛЮЧЕВАЯ МЫСЛЬ: займы под акции на Base',
+  '',
+  'ВАРИАНТЫ:',
+  '1 [Straight Value] Займы под токенизированные акции это новый слой для Base — 62 симв.',
+  '2. [Insight Add-on] «USDC под акции без продажи» — 30 симв.',
+  '**3 [Genuine Question]** Какой LTV по акциям? — 21 симв.',
+  '',
+  'ТОП-3:',
+  '— для ответа автора: №3, потому что вопрос',
+  '— для лайков третьих лиц: №1, потому что точно',
+  '— для запоминаемости: №2, потому что коротко',
+  '```'
 ].join(NL2);
+const V3P = parseV3Output(V3_OUT);
+const VARS = V3P.filter((b) => b.kind === 'variant');
 
-check('три варианта разбираются', parseReplies(REPLIES).length, 3);
-
-check(
-  'текст варианта берётся без маркера',
-  parseReplies(REPLIES)[1].text,
-  'the epoch closed 12% under target'
-);
-
-check(
-  'подстрочник попадает в свой вариант',
-  parseReplies(REPLIES)[2].gloss,
-  'знакомо, у меня ушла неделя'
-);
-
-check(
-  'порядок вариантов не зависит от порядка в ответе',
-  parseReplies(['@@2@@', 'второй', '@@1@@', 'первый'].join(NL2)).map((r) => r.text),
-  ['первый', 'второй']
-);
-
-check(
-  'недописанный поток отдаёт то, что уже пришло',
-  parseReplies(['@@1@@', 'готовый ответ', '@@RU1@@', 'перевод', '@@2@@'].join(NL2)).length,
-  1
-);
-
-check(
-  'обрывок маркера не попадает в текст',
-  parseReplies(['@@1@@', 'ответ целиком', '@@R'].join(NL2))[0].text,
-  'ответ целиком'
-);
-
-check(
-  'подстрочник без своего ответа отбрасывается',
-  parseReplies(['@@RU1@@', 'перевод без ответа'].join(NL2)).length,
-  0
-);
-
-check('болтовня до первого маркера не попадает в варианты', parseReplies(['Вот варианты:', '@@1@@', 'сам ответ'].join(NL2))[0].text, 'сам ответ');
-
-check('пустой ответ модели не ломает разбор', parseReplies(''), []);
+check('варианты V3 находятся все, в любом оформлении номера', VARS.map((v) => v.n), [1, 2, 3]);
+check('тип варианта берётся из скобок', VARS[1].type, 'Insight Add-on');
+check('счётчик символов и кавычки не попадают в текст', VARS[1].text, 'USDC под акции без продажи');
+check('число символов сохраняется отдельно', VARS[0].chars, 62);
+check('метка ТОП-3 цепляется к своему варианту', [VARS[0].top, VARS[1].top, VARS[2].top], ['для лайков третьих лиц', 'для запоминаемости', 'для ответа автора']);
+check('служебные строки V3 остаются текстом, по порядку', V3P[0].kind === 'text' && V3P[0].text.startsWith('КЛАССИФИКАЦИЯ') && V3P[V3P.length - 1].text.includes('ТОП-3'), true);
+check('ограды кода не показываются', V3P.some((b) => b.kind === 'text' && b.text.includes('```')), false);
+check('недописанная строка варианта уже видна, без счётчика', parseV3Output('5 [Bridge] это как Aave на').filter((b) => b.kind === 'variant')[0].chars, null);
+check('пустой ответ модели не ломает разбор', parseV3Output(''), []);
 
 
 // ——— что видит модель, когда пишет ответ ——————————————————————
@@ -256,65 +235,31 @@ check(
 );
 
 
-// ——— тон ответов ————————————————————————————————————————————————
-// Тон уезжал в критику дважды (25.08 и 31.08). Правила тона теперь проверяются
-// здесь, чтобы правка «на глаз» не сняла их молча в третий раз.
-const SYS = buildReplySystem({ persona: 'кто-то', fence: 'X1', glossLang: 'ru' });
+// ——— промпт ответов ————————————————————————————————————————————
+// 26.09 его решение: никакой обёртки. Модель получает REPLY PROMPT V3 слово в слово.
+check('системный промпт ответов — ровно V3, без добавок', buildReplySystem({ persona: 'кто-то', fence: 'X1', glossLang: 'ru' }), REPLY_PROMPT_V3);
+check('V3 вшит целиком, от роли до финальной проверки', REPLY_PROMPT_V3.includes('## РОЛЬ') && REPLY_PROMPT_V3.includes('ФИНАЛЬНАЯ ПРОВЕРКА (12 пунктов'), true);
 
+// ——— что видно у поста на X ————————————————————————————————————
+const X_CTX = composeReplyInput({
+  text: 'сам пост',
+  context: { page: 'x.com/base', author: 'Base @base — Where the world transacts', quote: 'Aave @aave: займы', card: 'aave.com', media: '1 picture(s), attached', replies: 'Kiva @cx_00: solid' }
+});
 check(
-  'усиление автора — главное правило, а не «быть на его стороне»',
-  SYS.includes('MAKE THEIR POINT STRONGER'),
+  'профиль, цитата, ссылка, картинки и чужие ответы доходят до модели, пост — последним',
+  ['THE AUTHOR', 'THE POST IT QUOTES', 'LINK PREVIEW', 'PICTURES IN THE POST', 'REPLIES OTHER PEOPLE', 'THE TEXT TO REPLY TO']
+    .map((h) => X_CTX.indexOf(h))
+    .every((v, i, a) => v > -1 && (i === 0 || v > a[i - 1])) && X_CTX.trimEnd().endsWith('сам пост'),
   true
 );
 
-check(
-  'возражение прямо запрещено, а не «только когда действительно»',
-  SYS.includes('DO NOT ARGUE') && !SYS.includes('DISAGREE ONLY WHEN YOU REALLY DO'),
-  true
-);
-
-check(
-  'оговорка и риск названы как НЕ вклад',
-  ['the caveat', 'the risk', 'the exception', 'devil\'s-advocate']
-    .every((s) => SYS.includes(s)),
-  true
-);
-
-check(
-  'возражать можно только типом 11 V3 — при настоящей фактической ошибке',
-  SYS.includes('the only pushback that exists is V3 type 11'),
-  true
-);
-
-check(
-  'промпт пользователя V3 вшит целиком, от роли до финальной проверки',
-  SYS.includes(REPLY_PROMPT_V3) && REPLY_PROMPT_V3.includes('## РОЛЬ') && REPLY_PROMPT_V3.includes('ФИНАЛЬНАЯ ПРОВЕРКА (12 пунктов'),
-  true
-);
-
-check(
-  'наружу только ТОП-3: 11 вариантов модель держит при себе',
-  SYS.includes('Print only the TOP-3') && SYS.includes('SILENTLY') && SYS.includes('@@3@@') && !SYS.includes('@@4@@'),
-  true
-);
-
-check(
-  'самопроверка ловит ответ, уменьшающий исходный пост',
-  SYS.includes('makes the original look weaker'),
-  true
-);
-
-check(
-  'ограничение на вопросы никуда не делось',
-  SYS.includes('AT MOST ONE OF THE THREE MAY ASK ANYTHING'),
-  true
-);
-
-check(
-  'подколы по-прежнему запрещены',
-  SYS.includes('NO JABS, NO IRONY, NO TEASING'),
-  true
-);
+{
+  const img = { mime: 'image/jpeg', data: 'QUJD' };
+  const g = buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100, images: [img] });
+  check('картинка поста уходит в Gemini перед текстом', g.contents[0].parts[0], { inline_data: { mime_type: 'image/jpeg', data: 'QUJD' } });
+  const plain = buildGeminiBody({ system: 'S', text: 'x', fence: 'f', maxTokens: 100 });
+  check('без картинок запрос Gemini прежний — одна текстовая часть', plain.contents[0].parts.length, 1);
+}
 
 
 // ——— деньги ————————————————————————————————————————————————————

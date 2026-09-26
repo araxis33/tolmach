@@ -12,9 +12,6 @@
   const LANG_LABEL = { ru: 'русский', en: 'английский', de: 'немецкий', es: 'испанский', fr: 'французский', zh: 'китайский', uk: 'украинский', tr: 'турецкий' };
   const SHORT = { ru: 'RU', en: 'EN', de: 'DE', es: 'ES', fr: 'FR', zh: 'ZH', uk: 'UK', tr: 'TR' };
 
-  // Порядок совпадает с ТОП-3 промпта REPLY PROMPT V3.
-  const REPLY_LABELS = ['Для ответа автора', 'Для лайков', 'Запомнится'];
-
   const TONE_CHIPS = [
     { id: 'natural', label: 'Естественно' },
     { id: 'literal', label: 'Дословно' },
@@ -177,11 +174,16 @@
   }
 
   // У твита есть узел с чистым текстом — берём его, а не всё подряд.
+  // Цитата лежит внутри поста в div[role="link"] со своими автором и текстом
+  // (замерено 26.09 на живой странице). Свой текст поста — тот, что вне её.
+  const QUOTE_SEL = 'div[role="link"]';
+  const own = (root, sel) => [...root.querySelectorAll(sel)].find((n) => !n.closest(QUOTE_SEL)) || null;
+
   function blockText(el) {
     if (!el || !el.querySelector) return '';
-    const body = el.querySelector('[data-testid="tweetText"]');
+    const body = own(el, '[data-testid="tweetText"]') || el.querySelector('[data-testid="tweetText"]');
     if (body) {
-      const who = el.querySelector('[data-testid="User-Name"]');
+      const who = own(el, '[data-testid="User-Name"]') || el.querySelector('[data-testid="User-Name"]');
       const name = who
         ? tidy(who.innerText).split('\n').filter(Boolean).slice(0, 2).join(' ')
         : '';
@@ -221,6 +223,115 @@
     const mine = all.indexOf(block);
     if (mine <= 0) return [];
     return all.slice(Math.max(0, mine - 3), mine);
+  }
+
+  // ——— что ещё видно у поста на X ——————————————————————————————————
+  // 26.09: модель знала только текст поста и писала общие фразы. Всё, что
+  // видно глазами, отдаём ей тоже: цитату, карточку ссылки, картинки, профиль
+  // автора и ответы, которые под постом уже написали.
+  const CTX_REPLIES_MAX = 1500;
+  const AD_LINE = /^(ad|promoted|реклама|рекламное)$/i;
+
+  function nameOf(el) {
+    const who = el && el.querySelector('[data-testid="User-Name"]');
+    return who ? tidy(who.innerText).split('\n').filter(Boolean).slice(0, 2).join(' ') : '';
+  }
+
+  // Картинки поста: фото и обложки видео. Фото просим в размере small — модели
+  // хватает, а скачивается в разы быстрее.
+  function postImages(article) {
+    const urls = [];
+    for (const img of article.querySelectorAll('[data-testid="tweetPhoto"] img, video[poster]')) {
+      let src = img.tagName === 'VIDEO' ? img.poster : img.src;
+      if (!/^https:\/\/pbs\.twimg\.com\//.test(src || '')) continue;
+      if (/\/media\//.test(src)) {
+        try {
+          const u = new URL(src);
+          u.searchParams.set('name', 'small');
+          src = u.href;
+        } catch {}
+      }
+      if (!urls.includes(src)) urls.push(src);
+    }
+    return urls.slice(0, 4);
+  }
+
+  function describeMedia(article, urls) {
+    if (!urls.length) return '';
+    const videos = article.querySelectorAll('video, [data-testid="videoPlayer"]').length;
+    const alts = [...article.querySelectorAll('[data-testid="tweetPhoto"] img')]
+      .map((i) => tidy(i.alt))
+      .filter((a) => a && !/^(image|изображение)$/i.test(a));
+    let line = videos ? `a video (its cover image is attached)` : `${urls.length} picture(s), attached`;
+    if (alts.length) line += '. Alt text: ' + alts.join(' / ');
+    return line;
+  }
+
+  // Описание профиля автора: на странице поста X сам показывает его справа,
+  // в блоке «Relevant people». В ленте его нет — тогда просто без него.
+  function authorBio(article) {
+    const handle = (nameOf(article).match(/@\w+/) || [''])[0].toLowerCase();
+    if (!handle) return '';
+    for (const cell of document.querySelectorAll('[data-testid="UserCell"]')) {
+      const lines = tidy(cell.innerText).split('\n').map((l) => l.trim()).filter(Boolean);
+      const at = lines.findIndex((l) => l.toLowerCase() === handle);
+      if (at === -1) continue;
+      const name = lines[at - 1] || '';
+      const bio = lines
+        .slice(at + 1)
+        .filter((l) => !/^(follow|following|unfollow|читать|читаю|подписаться|вы подписаны|follows you|читает вас)$/i.test(l))
+        .join(' ');
+      return tidy(`${name} ${handle}${bio ? ' — ' + bio : ''}`).slice(0, 400);
+    }
+    return '';
+  }
+
+  // Ответы под постом: на странице поста они идут в том же списке сразу после него.
+  function repliesAfter(article) {
+    if (!isThreadPage()) return '';
+    let anc = article;
+    let guard = 0;
+    while (anc && anc !== document.body && guard++ < 30) {
+      if (anc.querySelectorAll(POST_SEL).length > 1) break;
+      anc = anc.parentElement;
+    }
+    if (!anc || anc === document.body) return '';
+    const all = [...anc.querySelectorAll(POST_SEL)];
+    const mine = all.indexOf(article);
+    if (mine === -1) return '';
+    const out = [];
+    let budget = CTX_REPLIES_MAX;
+    for (const next of all.slice(mine + 1, mine + 16)) {
+      if (tidy(next.innerText).split('\n').some((l) => AD_LINE.test(l.trim()))) continue;
+      const body = own(next, '[data-testid="tweetText"]');
+      const said = body ? tidy(body.innerText) : '';
+      if (!said || budget <= 0) continue;
+      const line = `${nameOf(next)}: ${said}`.slice(0, 300);
+      out.push(line);
+      budget -= line.length;
+    }
+    return out.join('\n---\n');
+  }
+
+  function tweetExtras(article) {
+    const out = { quote: '', card: '', media: '', images: [], replies: '', author: '' };
+    if (!article || !article.matches || !article.matches(TWEET_SEL)) return out;
+    try {
+      const quote = [...article.querySelectorAll(QUOTE_SEL)].find((q) => q.querySelector('[data-testid="tweetText"]'));
+      if (quote) {
+        const qText = tidy(quote.querySelector('[data-testid="tweetText"]').innerText);
+        out.quote = `${nameOf(quote)}: ${qText}`.slice(0, CTX_POST_MAX);
+      }
+      const card = article.querySelector('[data-testid="card.wrapper"]');
+      if (card) out.card = dropNoise(tidy(card.innerText)).slice(0, 400);
+      out.images = postImages(article);
+      out.media = describeMedia(article, out.images);
+      out.author = authorBio(article);
+      out.replies = repliesAfter(article);
+    } catch {
+      // Вёрстка X меняется. Без этих кусков ответ всё равно пишется.
+    }
+    return out;
   }
 
   // Ищем блок, который и есть «пост»: сначала по разметке, потом по объёму текста.
@@ -271,6 +382,7 @@
         }
       }
       out.near = near.join('\n---\n').slice(0, CTX_NEAR_MAX);
+      Object.assign(out, tweetExtras(block));
     } catch {
       // Страница может закрыть доступ к чему угодно. Контекст желателен, но не обязателен.
     }
@@ -363,7 +475,7 @@
       );
     });
     const reply = el('button', 'tm-reply-btn', 'Ответить');
-    reply.title = 'Написать три варианта ответа на этот текст';
+    reply.title = 'Варианты ответа на этот текст по REPLY PROMPT V3';
     reply.addEventListener('click', () => startReply(current.text));
     foot.append(chips, reply, copy);
 
@@ -393,49 +505,119 @@
     return { main: rest.trim(), alt, note };
   }
 
-  // Тот же разбор, что в engine.js: content script не умеет импортировать.
-  function parseReplyStream(raw) {
-    const re = /@@(RU)?(\d+)@@/g;
-    const marks = [];
-    let m;
-    while ((m = re.exec(raw)) !== null) {
-      marks.push({ gloss: Boolean(m[1]), idx: Number(m[2]), start: m.index, end: re.lastIndex });
-    }
-    const slots = new Map();
-    for (let i = 0; i < marks.length; i++) {
-      const cur = marks[i];
-      const next = marks[i + 1];
-      let body = raw.slice(cur.end, next ? next.start : raw.length);
-      body = body.replace(/@[@A-Z0-9]*$/i, '').trim();
-      if (!body) continue;
-      const slot = slots.get(cur.idx) || { text: '', gloss: '' };
-      if (cur.gloss) slot.gloss = body;
-      else slot.text = body;
-      slots.set(cur.idx, slot);
-    }
-    return [...slots.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([, v]) => v)
-      .filter((v) => v.text);
+  // Тот же разбор, что parseV3Output в engine.js: content script не умеет импортировать.
+  // 26.09: вывод V3 показываем целиком, как в Grok; варианты — с кнопками.
+  const V3_VARIANT = /^[*_\s]*(\d{1,2})[.)]?[*_\s]*\[([^\]]+)\][*_\s]*(.+?)(?:\s*[—–-]\s*(\d+)\s*симв\.?)?[*_\s]*$/;
+  const V3_TOP = /^[—–\-*\s]*(для [^:]+):\s*№\s*(\d{1,2})/i;
+
+  function unquote(s) {
+    const t = s.trim();
+    const m = t.match(/^[«"“](.*)[»"”]$/);
+    return (m ? m[1] : t).trim();
   }
 
-  function renderReplies(list) {
+  function parseV3Output(raw) {
+    const blocks = [];
+    const tops = new Map();
+    for (const line of String(raw || '').split('\n')) {
+      if (/^\s*```/.test(line)) continue;
+      const top = line.match(V3_TOP);
+      if (top) tops.set(Number(top[2]), top[1].trim());
+      const v = line.match(V3_VARIANT);
+      if (v) {
+        blocks.push({ kind: 'variant', n: Number(v[1]), type: v[2].trim(), text: unquote(v[3]), chars: v[4] ? Number(v[4]) : null });
+        continue;
+      }
+      const last = blocks[blocks.length - 1];
+      if (last && last.kind === 'text') last.text += '\n' + line;
+      else blocks.push({ kind: 'text', text: line });
+    }
+    for (const b of blocks) {
+      if (b.kind === 'variant' && tops.has(b.n)) b.top = tops.get(b.n);
+      if (b.kind === 'text') b.text = b.text.replace(/^\n+|\s+$/g, '');
+    }
+    return blocks.filter((b) => b.kind === 'variant' || b.text);
+  }
+
+  // Язык поста решает, нужен ли перевод перед вставкой: V3 пишет по-русски.
+  function postIsRussian() {
+    const t = current.text || '';
+    const cyr = (t.match(/[Ѐ-ӿ]/g) || []).length;
+    const lat = (t.match(/[A-Za-z]/g) || []).length;
+    return cyr > lat;
+  }
+
+  // Переводит вариант обычным переводом Толмача и отдаёт готовый текст.
+  function translateVariant(text) {
+    return new Promise((resolve, reject) => {
+      let p;
+      try {
+        p = chrome.runtime.connect({ name: 'tolmach' });
+      } catch {
+        reject(new Error('Расширение обновилось — перезагрузи страницу'));
+        return;
+      }
+      p.onMessage.addListener((msg) => {
+        if (msg.type === 'done') {
+          p.disconnect();
+          resolve(parseStream(msg.raw).main);
+        } else if (msg.type === 'error') {
+          p.disconnect();
+          reject(new Error(msg.message));
+        }
+      });
+      p.postMessage({ type: 'translate', text, tone: 'tweet', targetOverride: 'en' });
+    });
+  }
+
+  async function translateAndUse(text, button, use) {
+    const label = button.textContent;
+    const say = (s) => {
+      button.textContent = s;
+      setTimeout(() => (button.textContent = label), 1800);
+    };
+    let out = text;
+    if (!postIsRussian()) {
+      button.textContent = 'Перевожу…';
+      try {
+        out = await translateVariant(text);
+      } catch (e) {
+        say('Не перевёл');
+        return;
+      }
+      button.textContent = label;
+    }
+    if (out) await use(out);
+  }
+
+  function renderReplies(blocks) {
     if (!card) return;
     card.replies.textContent = '';
-    list.forEach((item, i) => {
-      const box = el('div', 'tm-reply-item');
-      box.append(el('div', 'tm-reply-label', REPLY_LABELS[i] || `Вариант ${i + 1}`));
-      box.append(el('div', 'tm-reply-text', item.text));
-      if (item.gloss) box.append(el('div', 'tm-reply-gloss', item.gloss));
-
-      // Карточка открыта кнопкой под постом X — вариант можно сразу положить
-      // в поле ответа. Отправляет человек, не расширение.
-      const tweet = current.tweet;
-      if (tweet) {
-        const put = el('button', 'tm-reply-copy tm-reply-put', 'Вставить в ответ');
-        put.addEventListener('click', () => insertIntoReply(tweet, item.text, put));
-        box.append(put);
+    blocks.forEach((item) => {
+      if (item.kind === 'text') {
+        card.replies.append(el('div', 'tm-v3-text', item.text));
+        return;
       }
+      const box = el('div', 'tm-reply-item');
+      const label = `${item.n} · ${item.type}` + (item.chars ? ` · ${item.chars} симв.` : '') + (item.top ? ` · ТОП: ${item.top}` : '');
+      box.append(el('div', 'tm-reply-label', label));
+      box.append(el('div', 'tm-reply-text', item.text));
+
+      // Карточка открыта кнопкой под постом X — вариант переводится на язык
+      // поста и ложится в поле ответа. Отправляет человек, не расширение.
+      const tweet = current.tweet;
+      const put = el('button', 'tm-reply-copy tm-reply-put', tweet ? 'Перевести и вставить' : 'Перевести и копировать');
+      put.addEventListener('click', () =>
+        translateAndUse(item.text, put, (out) =>
+          tweet
+            ? insertIntoReply(tweet, out, put)
+            : navigator.clipboard.writeText(out).then(() => {
+                put.textContent = 'Скопировано';
+                setTimeout(() => (put.textContent = 'Перевести и копировать'), 1400);
+              })
+        )
+      );
+      box.append(put);
 
       const take = el('button', 'tm-reply-copy', 'Копировать');
       take.addEventListener('click', () => {
@@ -585,15 +767,15 @@
       if (!card) return;
       if (msg.type === 'reply-start') {
         card.dir.textContent = 'Ответ';
-        card.dir.title = 'Три варианта ответа на выделенный текст';
+        card.dir.title = 'Варианты ответа по REPLY PROMPT V3';
       } else if (msg.type === 'reply-delta') {
-        renderReplies(parseReplyStream(msg.full));
+        renderReplies(parseV3Output(msg.full));
       } else if (msg.type === 'reply-done') {
         card.spinner.classList.add('hidden');
         card.cost.textContent = costLine(msg.cost, msg.left);
         card.stamp.textContent = msg.note || '';
         card.stamp.classList.toggle('hidden', !msg.note);
-        renderReplies(parseReplyStream(msg.raw));
+        renderReplies(parseV3Output(msg.raw));
       } else if (msg.type === 'error') {
         card.replies.classList.add('hidden');
         showError(msg.message, msg.kind);
@@ -646,7 +828,7 @@
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.setAttribute(TWEET_BTN_ATTR, '1');
-      btn.title = 'Толмач: три варианта ответа с переводом';
+      btn.title = 'Толмач: варианты ответа по REPLY PROMPT V3';
       btn.innerHTML = REPLY_GLYPH;
       // Кнопка живёт в разметке X, а не в нашем shadow root, поэтому стили — на ней самой.
       Object.assign(btn.style, {
@@ -683,7 +865,8 @@
     const context = {
       page: tidy(pageTitle ? pageTitle + ' — ' + location.href : location.href).slice(0, 300),
       near: near.join('\n---\n').slice(0, CTX_NEAR_MAX),
-      post: ''
+      post: '',
+      ...tweetExtras(article)
     };
 
     const rect = btn.getBoundingClientRect();
@@ -708,9 +891,10 @@
   const COMPOSER_SEL = 'div[role="dialog"] [data-testid^="tweetTextarea_"][role="textbox"], div[role="dialog"] div[role="textbox"]';
 
   async function insertIntoReply(article, text, button) {
+    const idle = button.textContent;
     const say = (label) => {
       button.textContent = label;
-      setTimeout(() => (button.textContent = 'Вставить в ответ'), 1800);
+      setTimeout(() => (button.textContent = idle), 1800);
     };
     if (!article.isConnected) {
       say('Пост ушёл со страницы');
@@ -1078,6 +1262,7 @@
   color: #93908a; margin-bottom: 4px;
 }
 .tm-reply-text { white-space: pre-wrap; }
+.tm-v3-text { white-space: pre-wrap; font-size: 12px; color: #6b6862; line-height: 1.45; }
 .tm-reply-gloss {
   margin-top: 5px; font-size: 12.5px; color: #6b6862; white-space: pre-wrap;
 }
@@ -1110,6 +1295,7 @@
   .tm-cost { color: #7e7b74; }
   .tm-reply-label { color: #7e7b74; }
   .tm-reply-gloss { color: #b3afa7; }
+  .tm-v3-text { color: #9c988f; }
   .tm-reply-copy { background: #303036; color: #ece9e3; border-color: rgba(255,255,255,.14); }
   .tm-reply-copy:hover { background: #3a3a41; }
   .tm-reply-put, .tm-reply-put:hover { background: #1f8a4c; color: #fff; border-color: #1f8a4c; }

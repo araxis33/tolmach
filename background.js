@@ -280,6 +280,33 @@ async function handleTranslate(req, post, signal) {
   });
 }
 
+// Картинки поста X скачиваем сами и отдаём модели как base64: Gemini и Claude
+// ссылку на pbs.twimg.com не откроют. Не вышло с какой-то — отвечаем без неё.
+const IMAGE_HOST = /^https:\/\/pbs\.twimg\.com\//;
+const IMAGE_MAX_BYTES = 1_500_000;
+
+async function loadImages(urls, signal) {
+  const list = (Array.isArray(urls) ? urls : []).filter((u) => IMAGE_HOST.test(u)).slice(0, 4);
+  const out = await Promise.all(
+    list.map(async (url) => {
+      try {
+        const res = await fetch(url, { signal });
+        if (!res.ok) return null;
+        const mime = (res.headers.get('content-type') || '').split(';')[0].trim();
+        if (!/^image\/(jpeg|png|webp|gif)$/.test(mime)) return null;
+        const buf = new Uint8Array(await res.arrayBuffer());
+        if (!buf.length || buf.length > IMAGE_MAX_BYTES) return null;
+        let bin = '';
+        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+        return { mime, data: btoa(bin) };
+      } catch {
+        return null;
+      }
+    })
+  );
+  return out.filter(Boolean);
+}
+
 async function handleReply(req, post, signal) {
   const settings = await getSettings();
   const text = (req.text || '').trim();
@@ -293,6 +320,7 @@ async function handleReply(req, post, signal) {
   const result = await replyStream({
     text,
     context: req.context,
+    images: await loadImages(req.context?.images, signal),
     settings,
     signal,
     onDelta: (_chunk, full) => post({ type: 'reply-delta', full })
