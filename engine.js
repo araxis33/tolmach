@@ -326,23 +326,46 @@ async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, 
     // Пока на экран ничего не ушло, работу можно доделать на другом провайдере.
     // Как только первый кусок напечатан — нельзя: текст задвоится.
     let printed = false;
+    // Перевод не ждёт перегруженный Gemini дольше срока: есть Groq — отдаём ему.
+    const budget = geminiBudgetFor(cfg, purpose);
+    let budgetHit = false;
+    let timer = null;
+    let geminiSignal = signal;
+    if (budget && typeof AbortController === 'function') {
+      const ctrl = new AbortController();
+      if (signal) {
+        if (signal.aborted) ctrl.abort(signal.reason);
+        else signal.addEventListener('abort', () => ctrl.abort(signal.reason));
+      }
+      timer = setTimeout(() => {
+        if (printed) return;
+        budgetHit = true;
+        ctrl.abort(deadlineReason(budget));
+      }, budget);
+      geminiSignal = ctrl.signal;
+    }
     const relay = (piece, full) => {
       printed = true;
+      clearTimeout(timer);
       if (onDelta) onDelta(piece, full);
     };
     try {
-      return await runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, images, onDelta: relay });
+      return await runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal: geminiSignal, images, onDelta: relay });
     } catch (geminiErr) {
+      clearTimeout(timer);
       if (signal?.aborted) throw geminiErr;
-      let err = geminiErr;
+      let err = budgetHit
+        ? new TranslationError(`Gemini не начал отвечать за ${Math.round(budget / 1000)} с.`, 'server')
+        : geminiErr;
+      const why = err.message;
       // Сначала бесплатный Groq: у него своя ёмкость, и лёг он вряд ли тогда же.
       if (canUseGroq(cfg, err, printed)) {
         try {
           const out = await runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, onDelta: relay });
-          return { ...out, how: `выручил Groq — ${geminiErr.message}` };
+          return { ...out, how: `выручил Groq — ${why}` };
         } catch (groqErr) {
           if (signal?.aborted || printed) throw groqErr;
-          err = withReason(geminiErr, `Groq тоже не смог: ${groqErr.message}`);
+          err = withReason(err, `Groq тоже не смог: ${groqErr.message}`);
         }
       }
       const blocked = fallbackBlockedReason(cfg, err, printed);
@@ -448,6 +471,20 @@ export function geminiAttempts(cfg, model, purpose) {
     list.push(other);
   }
   return list;
+}
+
+/**
+ * Сколько перевод ждёт первый кусок от Gemini, прежде чем отдать работу Groq.
+ * 28.09: бесплатный Gemini перегружен неделями, перевод шёл по 25 с, а Groq
+ * отвечает за секунду. Ответам на посты срок не ставим: им положено подумать.
+ * Без ключа Groq или со снятой галочкой ждём Gemini как раньше — отдать некому.
+ */
+export const GEMINI_TRANSLATE_BUDGET_MS = 4000;
+
+export function geminiBudgetFor(cfg, purpose) {
+  if (purpose === 'reply') return 0;
+  if (!cfg.groqKey || cfg.groqWhenGeminiBusy === false) return 0;
+  return GEMINI_TRANSLATE_BUDGET_MS;
 }
 
 /** Сколько помним выручившую модель: всплеск спроса длится часами, не сутками. */

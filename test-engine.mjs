@@ -23,6 +23,7 @@ import {
   geminiErrorFrom,
   pickGeminiModels,
   geminiAttempts,
+  geminiBudgetFor,
   FREE_FALLBACK_MODELS,
   thinkingBudgetFor,
   thinkingConfigFor,
@@ -615,6 +616,20 @@ check('подпись: не спрашивали вовсе', thinkingLabel(2, f
     err = e;
   }
   check('галочка снята — Groq не зовётся', /high demand|не отвечает/.test(err && err.message), true);
+
+  // Gemini принял запрос и молчит — перевод не ждёт 25 с, через 4 с его делает Groq.
+  globalThis.fetch = async (url, init) => {
+    const host = new URL(String(url)).host;
+    if (host === 'api.groq.com') return groqSse('Привет');
+    return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+  };
+  const t0 = Date.now();
+  const slow = await translateStream({ text: 'Hello there, friend', settings });
+  const waited = Date.now() - t0;
+  check('Gemini молчит — через 4 с перевод делает Groq', [slow.raw.trim(), waited >= 3900 && waited < 6000], ['Привет', true]);
+  check('в подписи сказано, что Gemini не начал отвечать', /не начал отвечать за 4 с/.test(slow.how || ''), true);
+  check('ответам на посты срок не ставим', geminiBudgetFor(settings, 'reply'), 0);
+  check('без ключа Groq срок не ставим — отдать некому', geminiBudgetFor({ ...settings, groqKey: '' }, 'translate'), 0);
   globalThis.fetch = realFetch;
 }
 
