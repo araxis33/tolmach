@@ -400,6 +400,16 @@ check('ошибка внутри потока без HTTP-кода тоже ра
     geminiAttempts({ ...g, geminiAvailable: ['lite-m'] }, 'lite-m'), ['lite-m', 'lite-m']);
   check('списка моделей ещё нет — в запас идёт прошлое поколение',
     geminiAttempts(g, 'lite-m'), ['lite-m', 'lite-m', ...FREE_FALLBACK_MODELS]);
+  const avail = ['new-flash', 'lite-m', 'mid-flash', 'old-flash', 'older-flash'];
+  check('недавно выручившая модель идёт первой, остальная лестница та же',
+    geminiAttempts({ ...g, geminiAvailable: avail, geminiGood: { translate: { model: 'mid-flash', at: Date.now() } } }, 'lite-m', 'translate'),
+    ['mid-flash', 'lite-m', 'lite-m', 'new-flash', 'old-flash', 'older-flash']);
+  check('запись старше получаса забыта',
+    geminiAttempts({ ...g, geminiAvailable: avail, geminiGood: { translate: { model: 'mid-flash', at: Date.now() - 31 * 60 * 1000 } } }, 'lite-m', 'translate'),
+    ['lite-m', 'lite-m', 'new-flash', 'mid-flash', 'old-flash']);
+  check('выручившая на перевод не лезет в ответ',
+    geminiAttempts({ ...g, geminiAvailable: avail, geminiGood: { translate: { model: 'mid-flash', at: Date.now() } } }, 'flash-m', 'reply')[0],
+    'flash-m');
 
   const sse = (text) =>
     new Response(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] })}\n\n`, { status: 200 });

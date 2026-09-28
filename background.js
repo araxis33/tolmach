@@ -34,6 +34,16 @@ async function rememberThinkingStep(settings, step) {
   await chrome.storage.local.set({ geminiThinkingStep: step });
 }
 
+/**
+ * Запоминаем модель Gemini, которая ответила: следующий перевод начнётся с неё,
+ * а не с перегруженной свежей (28.09 лестница тратила на это 25 с каждый раз).
+ */
+async function rememberGoodModel(settings, purpose, model) {
+  if (!/^gemini-/.test(model || '')) return;
+  const good = { ...(settings.geminiGood || {}), [purpose]: { model, at: Date.now() } };
+  await chrome.storage.local.set({ geminiGood: good });
+}
+
 // ——— счётчик расходов ————————————————————————————————————————
 // Токены берём из ответа API, а не прикидываем по длине текста.
 // Консоль Anthropic обновляется с задержкой и по UTC, поэтому живой счёт — здесь.
@@ -266,6 +276,7 @@ async function handleTranslate(req, post, signal) {
   });
 
   await rememberThinkingStep(settings, result.thinkingStep);
+  await rememberGoodModel(settings, 'translate', result.model);
   const cost = await recordSpend('translate', result.model, result.usage);
   post({
     type: 'done',
@@ -326,6 +337,7 @@ async function handleReply(req, post, signal) {
     onDelta: (_chunk, full) => post({ type: 'reply-delta', full })
   });
 
+  await rememberGoodModel(settings, 'reply', result.model);
   const cost = await recordSpend('reply', result.model, result.usage);
   post({
     type: 'reply-done',

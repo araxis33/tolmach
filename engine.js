@@ -26,6 +26,9 @@ export const DEFAULTS = {
   // Все пригодные модели ключа — их запоминает «Проверить». Когда одна модель
   // отвечает 503 «перегружена», у соседней ёмкость своя, и она часто отвечает.
   geminiAvailable: [],
+  // Какая модель последней ответила на перевод и на ответ, и когда: { translate: { model, at } }.
+  // С неё начинается следующая попытка, пока свежие модели перегружены.
+  geminiGood: {},
   // Groq — второй бесплатный поставщик. Нужен потому, что бесплатный Gemini
   // ложится с 503 «high demand» целыми днями (22–23.09.2026 так вставал Толмач).
   // Подстраховка им включена по умолчанию: она ничего не стоит.
@@ -422,9 +425,15 @@ export function withReason(err, reason) {
  * Flash часто отвечает 503 «перегружена», когда Flash-Lite работает, и
  * человек видел «Gemini не отвечает» на каждый ответ при живом переводе.
  */
-export function geminiAttempts(cfg, model) {
+export function geminiAttempts(cfg, model, purpose) {
   const lighter = modelFor(cfg, 'translate');
   const list = [model, model];
+  // Модель, которая недавно ответила на эту задачу, — первой и один раз.
+  // 28.09: свежие Flash и Flash-Lite лежали с 503, лестница доходила до живой
+  // соседки только через 25 с на каждом переводе — со стороны «не отвечает».
+  const good = recentGoodModel(cfg, purpose);
+  if (good && good !== model) list.unshift(good);
+  const cap = list.length + 3;
   if (lighter && lighter !== model) list.push(lighter);
   // Дальше — остальные модели ключа. У каждой своя ёмкость: когда свежая Flash
   // отвечает 503 «перегружена», прошлое поколение обычно отвечает нормально.
@@ -434,11 +443,21 @@ export function geminiAttempts(cfg, model) {
   // лестница пойдёт дальше без потери времени.
   const tail = (cfg.geminiAvailable || []).length ? cfg.geminiAvailable : FREE_FALLBACK_MODELS;
   for (const other of tail) {
-    if (list.length >= 5) break;
+    if (list.length >= cap) break;
     if (!other || list.includes(other)) continue;
     list.push(other);
   }
   return list;
+}
+
+/** Сколько помним выручившую модель: всплеск спроса длится часами, не сутками. */
+export const GOOD_MODEL_TTL_MS = 30 * 60 * 1000;
+
+/** Недавно ответившая модель для задачи, если запись ещё свежая. */
+export function recentGoodModel(cfg, purpose, now = Date.now()) {
+  const rec = (cfg.geminiGood || {})[purpose === 'reply' ? 'reply' : 'translate'];
+  if (!rec || !rec.model || !(now - rec.at < GOOD_MODEL_TTL_MS)) return '';
+  return rec.model;
 }
 
 /** Долгоживущие бесплатные модели — запас, когда список ключа ещё не собран. */
@@ -523,7 +542,7 @@ const pause = (ms, signal) =>
   });
 
 async function runGemini({ cfg, model, purpose, system, text, fence, maxTokens, signal, images, onDelta }) {
-  const attempts = geminiAttempts(cfg, model);
+  const attempts = geminiAttempts(cfg, model, purpose);
   let lastError = null;
   // Каким способом просим ограничить размышления: 0 — бюджет, 1 — уровень, 2 — никак.
   // Начинаем с запомненного: подбирать заново на каждом переводе — значит каждый раз
