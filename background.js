@@ -87,9 +87,13 @@ let finishing = false;
 
 async function finishChatgptLogin(tabId, url) {
   if (finishing) return;
-  const { [LOGIN_PENDING]: pending } = await chrome.storage.session.get(LOGIN_PENDING);
-  if (!pending || pending.tabId !== tabId) return;
+  // Флаг — до первого await: второй onUpdated приходит, пока первый читает storage.
   finishing = true;
+  const { [LOGIN_PENDING]: pending } = await chrome.storage.session.get(LOGIN_PENDING);
+  if (!pending || pending.tabId !== tabId) {
+    finishing = false;
+    return;
+  }
   try {
     await chrome.storage.session.remove(LOGIN_PENDING);
     chrome.tabs.remove(tabId).catch(() => {});

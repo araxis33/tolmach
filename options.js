@@ -36,6 +36,7 @@ const FIELDS = {
   provider: { el: () => $('provider'), prop: 'value' },
   chatgptModel: { el: () => $('chatgptModel'), prop: 'value' },
   chatgptReplyModel: { el: () => $('chatgptReplyModel'), prop: 'value' },
+  spareWhenChatgptFails: { el: () => $('spareWhenChatgptFails'), prop: 'checked' },
   geminiKey: { el: () => $('geminiKey'), prop: 'value' },
   geminiModel: { el: () => $('geminiModel'), prop: 'value' },
   geminiReplyModel: { el: () => $('geminiReplyModel'), prop: 'value' },

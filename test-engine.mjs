@@ -748,10 +748,11 @@ check('подпись: не спрашивали вовсе', thinkingLabel(2, f
   check('400 — argument', chatgptErrorFrom(400, { message: 'Unsupported parameter: reasoning' }).kind, 'argument');
 
   const busy = new TranslationError('x', 'server');
-  check('ChatGPT занят — выручает Gemini', chatgptSpare({ geminiKey: 'k', groqKey: 'g' }, busy, false), 'gemini');
-  check('нет Gemini — Groq', chatgptSpare({ groqKey: 'g' }, busy, false), 'groq');
-  check('уже печатал — никто', chatgptSpare({ geminiKey: 'k' }, busy, true), '');
-  check('дурной запрос — никто', chatgptSpare({ geminiKey: 'k' }, new TranslationError('x', 'argument'), false), '');
+  check('ChatGPT занят — выручает Gemini', chatgptSpare({ spareWhenChatgptFails: true, geminiKey: 'k', groqKey: 'g' }, busy, false), 'gemini');
+  check('галочка выключена (по умолчанию) — никто', chatgptSpare({ ...DEFAULTS, geminiKey: 'k' }, busy, false), '');
+  check('нет Gemini — Groq', chatgptSpare({ spareWhenChatgptFails: true, groqKey: 'g' }, busy, false), 'groq');
+  check('уже печатал — никто', chatgptSpare({ spareWhenChatgptFails: true, geminiKey: 'k' }, busy, true), '');
+  check('дурной запрос — никто', chatgptSpare({ spareWhenChatgptFails: true, geminiKey: 'k' }, new TranslationError('x', 'argument'), false), '');
 
   // Сквозной путь через движок с подменённой сетью.
   const realFetch = globalThis.fetch;
@@ -796,7 +797,15 @@ check('подпись: не спрашивали вовсе', thinkingLabel(2, f
     }
     return new Response(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Привет' }] }, finishReason: 'STOP' }] })}\n\n`, { status: 200 });
   };
-  const spared = await translateStream({ text: 'Hello there, friend', settings: base });
+  let limitErr = null;
+  try {
+    await translateStream({ text: 'Hello there, friend', settings: base });
+  } catch (e) {
+    limitErr = e;
+  }
+  check('подстраховка выключена — видна ошибка ChatGPT как есть', /Лимит подписки ChatGPT/.test(limitErr && limitErr.message), true);
+  hosts.length = 0;
+  const spared = await translateStream({ text: 'Hello there, friend', settings: { ...base, spareWhenChatgptFails: true } });
   check('лимит подписки — перевёл Gemini', [spared.raw.trim(), spared.model], ['Привет', 'lite-m']);
   check('в подписи: выручил Gemini и почему', /выручил Gemini — Лимит подписки/.test(spared.how || ''), true);
   check('к ChatGPT один запрос — лимит не долбим', hosts.filter((h) => h === 'api.openai.com').length, 1);

@@ -45,6 +45,9 @@ export const DEFAULTS = {
   chatgptAvailable: [],
   // Модель не приняла поле reasoning (400) — дальше шлём без него.
   chatgptNoReasoning: false,
+  // Подстраховка Gemini/Groq, когда ChatGPT не смог. ВЫКЛЮЧЕНА по его решению 08.10:
+  // «отключить эти костыли пока на месяц» — ошибка ChatGPT показывается как есть.
+  spareWhenChatgptFails: false,
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
   foreign: 'en',       // рабочий второй язык
@@ -1077,6 +1080,7 @@ async function runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, o
  * лимит / вход устарел / нет модели»: на дурной запрос запасной не поможет.
  */
 export function chatgptSpare(cfg, err, printed) {
+  if (!cfg.spareWhenChatgptFails) return '';
   if (printed || !(err instanceof TranslationError)) return '';
   if (!['server', 'rate', 'auth', 'model'].includes(err.kind)) return '';
   if (cfg.geminiKey) return 'gemini';

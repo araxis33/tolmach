@@ -54,9 +54,14 @@
         <select id="chatgptReplyModel"></select>
       </label>
     </div>
+    <label class="check">
+      <input type="checkbox" id="spareWhenChatgptFails">
+      <span>Если ChatGPT не ответил — доделать через Gemini или Groq</span>
+    </label>
     <p class="help">
-      Упрётся подписка в лимит или ChatGPT не ответит — перевод доделают бесплатные
-      Gemini и Groq ниже, а под переводом будет видно, кто выручил.
+      Выключено: если ChatGPT не справится, в карточке будет его ошибка как есть. Включишь —
+      при лимите подписки или сбое перевод доделают бесплатные Gemini и Groq ниже,
+      а под переводом будет видно, кто выручил.
     </p>
   </section>
 
