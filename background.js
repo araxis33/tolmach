@@ -14,13 +14,169 @@ import {
   pickGeminiModels,
   listGroqModels,
   pickGroqModels,
+  listChatgptModels,
+  pickChatgptModels,
   TranslationError
 } from './engine.js';
+import {
+  buildAuthorizeUrl,
+  isCallbackUrl,
+  readCallback,
+  verifyIdToken,
+  exchangeCode,
+  refreshTokens,
+  revokeToken,
+  authRecord,
+  hasPlanScope,
+  needsRefresh,
+  randomToken,
+  pkceChallenge
+} from './chatgpt-auth.js';
 
 // ——— настройки ————————————————————————————————————————————————
 async function getSettings() {
   const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));
-  return { ...DEFAULTS, ...stored };
+  const settings = { ...DEFAULTS, ...stored };
+  // Токен входа ChatGPT живёт час — обновляем перед запросом, а не после отказа.
+  if (settings.chatgptAuth) settings.chatgptAuth = await freshChatgptAuth(settings.chatgptAuth);
+  return settings;
+}
+
+// ——— вход через ChatGPT ————————————————————————————————————————
+// Пока человек входит на auth.openai.com, service worker может уснуть, поэтому
+// всё про текущую попытку лежит в storage.session, а слушатель вкладок —
+// на верхнем уровне файла: Chrome будит воркер ради него.
+const LOGIN_PENDING = 'chatgptPending';
+const LOGIN_STATUS = 'chatgptLoginStatus';
+
+function loginStatus(phase, message = '') {
+  return chrome.storage.session.set({ [LOGIN_STATUS]: { phase, message, at: Date.now() } });
+}
+
+async function startChatgptLogin() {
+  const stored = await chrome.storage.local.get(['chatgptClientId', 'chatgptHostId', 'chatgptAuth']);
+  // Свой идентификатор у каждой машины; создаётся один раз и больше не меняется.
+  let hostId = stored.chatgptHostId;
+  if (!hostId) {
+    hostId = `urn:uuid:${crypto.randomUUID()}`;
+    await chrome.storage.local.set({ chatgptHostId: hostId });
+  }
+  const verifier = randomToken(48);
+  const pending = {
+    clientId: stored.chatgptClientId || '',
+    state: randomToken(24),
+    nonce: randomToken(24),
+    verifier
+  };
+  const url = buildAuthorizeUrl({
+    clientId: pending.clientId,
+    hostId,
+    state: pending.state,
+    nonce: pending.nonce,
+    challenge: await pkceChallenge(verifier),
+    loginHint: (stored.chatgptAuth && stored.chatgptAuth.email) || ''
+  });
+  const tab = await chrome.tabs.create({ url });
+  await chrome.storage.session.set({ [LOGIN_PENDING]: { ...pending, tabId: tab.id } });
+  await loginStatus('waiting');
+}
+
+// Повторный вызов на тот же адрес (Chrome шлёт onUpdated не один раз) не должен
+// второй раз менять код на токены: код одноразовый, вторая попытка испортила бы вход.
+let finishing = false;
+
+async function finishChatgptLogin(tabId, url) {
+  if (finishing) return;
+  const { [LOGIN_PENDING]: pending } = await chrome.storage.session.get(LOGIN_PENDING);
+  if (!pending || pending.tabId !== tabId) return;
+  finishing = true;
+  try {
+    await chrome.storage.session.remove(LOGIN_PENDING);
+    chrome.tabs.remove(tabId).catch(() => {});
+    const cb = readCallback(url);
+    if (cb.state !== pending.state) throw new Error('Ответ входа не совпал с запросом. Нажми «Войти» ещё раз.');
+    if (cb.error) {
+      throw new Error(cb.error === 'access_denied' ? 'Вход отменён.' : `OpenAI: ${cb.errorDescription || cb.error}`);
+    }
+    if (pending.clientId && cb.clientId && cb.clientId !== pending.clientId) {
+      throw new Error('OpenAI вернул чужой идентификатор приложения — вход отклонён.');
+    }
+    const clientId = pending.clientId || cb.clientId;
+    if (!clientId) throw new Error('Регистрация Толмача в ChatGPT не завершилась. Нажми «Войти» ещё раз.');
+    // Сохраняем сразу: даже если дальше что-то сорвётся, повторный вход не
+    // зарегистрирует Толмача в его ChatGPT второй раз.
+    await chrome.storage.local.set({ chatgptClientId: clientId });
+
+    const tokens = await exchangeCode({ clientId, code: cb.code, verifier: pending.verifier });
+    const claims = await verifyIdToken(tokens.id_token, { clientId, nonce: pending.nonce });
+    const auth = authRecord(tokens, claims, clientId);
+    if (!hasPlanScope(auth.scope || cb.scope)) {
+      throw new Error('Вход есть, но разрешение «тратить подписку» не дано. Нажми «Войти» ещё раз и оставь его включённым.');
+    }
+    const models = await listChatgptModels(auth.accessToken);
+    if (!models.length) throw new Error('Вход есть, но OpenAI не показал ни одной модели для этой подписки.');
+    const picked = pickChatgptModels(models);
+    await chrome.storage.local.set({
+      chatgptAuth: auth,
+      chatgptAvailable: models,
+      chatgptModel: picked.translate,
+      chatgptReplyModel: picked.reply,
+      chatgptNoReasoning: false,
+      provider: 'chatgpt'
+    });
+    await loginStatus('ok', auth.email);
+  } catch (err) {
+    await loginStatus('error', describeError(err));
+  } finally {
+    finishing = false;
+  }
+}
+
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.url && isCallbackUrl(info.url)) finishChatgptLogin(tabId, info.url);
+});
+
+// Закрыл вкладку входа, не войдя, — говорим об этом, а не «ждём» вечно.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const { [LOGIN_PENDING]: pending } = await chrome.storage.session.get(LOGIN_PENDING);
+  if (!pending || pending.tabId !== tabId || finishing) return;
+  await chrome.storage.session.remove(LOGIN_PENDING);
+  await loginStatus('error', 'Вкладку входа закрыли — вход не завершён.');
+});
+
+// Одно обновление на всех: долгий токен одноразовый, два параллельных
+// обновления потратили бы его дважды, и второе выкинуло бы из входа.
+let refreshing = null;
+
+async function freshChatgptAuth(auth) {
+  if (!needsRefresh(auth)) return auth;
+  if (!refreshing) {
+    refreshing = (async () => {
+      try {
+        const tokens = await refreshTokens({ clientId: auth.clientId, refreshToken: auth.refreshToken });
+        const next = authRecord(tokens, null, auth.clientId, auth);
+        await chrome.storage.local.set({ chatgptAuth: next });
+        return next;
+      } catch {
+        // Не обновился — идём со старым: OpenAI ответит 401, карточка скажет
+        // «войди заново», а перевод доделают Gemini или Groq.
+        return auth;
+      } finally {
+        refreshing = null;
+      }
+    })();
+  }
+  return refreshing;
+}
+
+async function chatgptLogout() {
+  const stored = await chrome.storage.local.get(['chatgptAuth', 'provider', 'geminiKey', 'groqKey']);
+  const auth = stored.chatgptAuth;
+  if (auth && auth.refreshToken) await revokeToken({ clientId: auth.clientId, token: auth.refreshToken });
+  const next = { chatgptAuth: null, chatgptAvailable: [], chatgptModel: '', chatgptReplyModel: '' };
+  if (stored.provider === 'chatgpt') next.provider = !stored.geminiKey && stored.groqKey ? 'groq' : 'gemini';
+  await chrome.storage.local.set(next);
+  await chrome.storage.session.remove(LOGIN_STATUS);
 }
 
 /**
@@ -38,6 +194,12 @@ async function rememberThinkingStep(settings, step) {
  * Запоминаем модель Gemini, которая ответила: следующий перевод начнётся с неё,
  * а не с перегруженной свежей (28.09 лестница тратила на это 25 с каждый раз).
  */
+/** Модель ChatGPT отвергла поле reasoning — запоминаем, чтобы не платить отказом каждый раз. */
+async function rememberNoReasoning(settings, off) {
+  if (!off || settings.chatgptNoReasoning) return;
+  await chrome.storage.local.set({ chatgptNoReasoning: true });
+}
+
 async function rememberGoodModel(settings, purpose, model) {
   if (!/^gemini-/.test(model || '')) return;
   const good = { ...(settings.geminiGood || {}), [purpose]: { model, at: Date.now() } };
@@ -198,6 +360,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg?.type === 'chatgpt-login' || msg?.type === 'chatgpt-logout') {
+    (msg.type === 'chatgpt-login' ? startChatgptLogin() : chatgptLogout())
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, message: describeError(err) }));
+    return true;
+  }
   return false;
 });
 
@@ -276,6 +444,7 @@ async function handleTranslate(req, post, signal) {
   });
 
   await rememberThinkingStep(settings, result.thinkingStep);
+  await rememberNoReasoning(settings, result.reasoningOff);
   await rememberGoodModel(settings, 'translate', result.model);
   const cost = await recordSpend('translate', result.model, result.usage);
   post({
@@ -337,6 +506,7 @@ async function handleReply(req, post, signal) {
     onDelta: (_chunk, full) => post({ type: 'reply-delta', full })
   });
 
+  await rememberNoReasoning(settings, result.reasoningOff);
   await rememberGoodModel(settings, 'reply', result.model);
   const cost = await recordSpend('reply', result.model, result.usage);
   post({

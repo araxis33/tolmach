@@ -6,6 +6,7 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
+const OPENAI_BASE = 'https://api.openai.com/v1';
 
 export const DEFAULTS = {
   // Gemini по умолчанию: у Google есть бесплатная квота, у Anthropic — нет.
@@ -36,6 +37,14 @@ export const DEFAULTS = {
   groqModel: '',
   groqAvailable: [],
   groqWhenGeminiBusy: true,
+  // ChatGPT по подписке Plus (08.10.2026). Вход — кнопкой в Параметрах, токены
+  // кладёт service worker. Модели — со списка аккаунта: [{ slug, name }].
+  chatgptAuth: null,
+  chatgptModel: '',
+  chatgptReplyModel: '',
+  chatgptAvailable: [],
+  // Модель не приняла поле reasoning (400) — дальше шлём без него.
+  chatgptNoReasoning: false,
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
   foreign: 'en',       // рабочий второй язык
@@ -283,18 +292,25 @@ function buildBody({ model, system, text, maxTokens, fence, effort = 'low', imag
 // ——— какой ключ и какая модель ——————————————————————————————————
 
 export function providerOf(cfg) {
-  if (cfg.provider === 'claude' || cfg.provider === 'groq') return cfg.provider;
+  if (cfg.provider === 'claude' || cfg.provider === 'groq' || cfg.provider === 'chatgpt') return cfg.provider;
   return 'gemini';
 }
 
 /** Ключ выбранного провайдера или пустая строка. */
 export function activeKey(cfg) {
   const p = providerOf(cfg);
+  if (p === 'chatgpt') return (cfg.chatgptAuth && cfg.chatgptAuth.accessToken) || '';
   return p === 'claude' ? cfg.apiKey || '' : p === 'groq' ? cfg.groqKey || '' : cfg.geminiKey || '';
 }
 
 /** Модель под задачу: ответы пишутся на своей, перевод и страница — на основной. */
 export function modelFor(cfg, purpose) {
+  if (providerOf(cfg) === 'chatgpt') {
+    const first = ((cfg.chatgptAvailable || [])[0] || {}).slug || '';
+    return purpose === 'reply'
+      ? cfg.chatgptReplyModel || cfg.chatgptModel || first
+      : cfg.chatgptModel || first;
+  }
   if (providerOf(cfg) === 'groq') return cfg.groqModel || GROQ_FALLBACK_MODELS[0];
   if (providerOf(cfg) === 'claude') {
     return purpose === 'reply' ? cfg.replyModel || cfg.model : cfg.model;
@@ -307,7 +323,11 @@ export function modelFor(cfg, purpose) {
 function requireKey(cfg) {
   if (activeKey(cfg)) return;
   throw new TranslationError(
-    { claude: 'Не задан ключ Anthropic.', groq: 'Не задан ключ Groq.' }[providerOf(cfg)] || 'Не задан ключ Gemini.',
+    {
+      claude: 'Не задан ключ Anthropic.',
+      groq: 'Не задан ключ Groq.',
+      chatgpt: 'Не выполнен вход в ChatGPT. Открой Параметры Толмача и нажми «Войти через ChatGPT».'
+    }[providerOf(cfg)] || 'Не задан ключ Gemini.',
     'nokey'
   );
 }
@@ -319,6 +339,30 @@ function requireKey(cfg) {
 async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, effort, images, onDelta }) {
   requireKey(cfg);
   const model = modelFor(cfg, purpose);
+  if (providerOf(cfg) === 'chatgpt') {
+    let printed = false;
+    const relay = (piece, full) => {
+      printed = true;
+      if (onDelta) onDelta(piece, full);
+    };
+    try {
+      return await runChatgpt({ cfg, model, purpose, system, text, fence, signal, images, onDelta: relay });
+    } catch (err) {
+      // Подписка упёрлась в лимит, ChatGPT занят или вход устарел — доделывают
+      // бесплатные Gemini и Groq, пока на экран ничего не ушло.
+      const spare = chatgptSpare(cfg, err, printed);
+      if (signal?.aborted || !spare) throw err;
+      try {
+        const out = await runModel({
+          cfg: { ...cfg, provider: spare }, purpose, system, text, fence, maxTokens, signal, effort, images, onDelta
+        });
+        return { ...out, how: `выручил ${spare === 'groq' ? 'Groq' : 'Gemini'} — ${err.message}` };
+      } catch (spareErr) {
+        if (signal?.aborted) throw spareErr;
+        throw withReason(err, `${spare === 'groq' ? 'Groq' : 'Gemini'} тоже не смог: ${spareErr.message}`);
+      }
+    }
+  }
   if (providerOf(cfg) === 'groq') {
     return runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, onDelta });
   }
@@ -1020,6 +1064,202 @@ async function runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, o
   throw lastError || new TranslationError('Groq не ответил.', 'server');
 }
 
+// ——— ChatGPT по подписке ————————————————————————————————————————
+// Тот же api.openai.com/v1/responses, что и у ключей API, но с токеном входа
+// через ChatGPT: запросы списываются с лимитов подписки Plus (общих с Codex),
+// а не со счёта. Ограничения этого пути (siwc, preview limitations): обязательно
+// store:false и stream:true; temperature, max_output_tokens, роль system и
+// previous_response_id не принимаются — системный промпт уходит в instructions.
+
+/**
+ * Кто доделает работу, когда ChatGPT не смог: сначала Gemini, потом Groq —
+ * оба бесплатные. Только пока на экран ничего не ушло и только на «занят /
+ * лимит / вход устарел / нет модели»: на дурной запрос запасной не поможет.
+ */
+export function chatgptSpare(cfg, err, printed) {
+  if (printed || !(err instanceof TranslationError)) return '';
+  if (!['server', 'rate', 'auth', 'model'].includes(err.kind)) return '';
+  if (cfg.geminiKey) return 'gemini';
+  if (cfg.groqKey) return 'groq';
+  return '';
+}
+
+/**
+ * Список моделей аккаунта: { models: [{ slug, display_name, visibility }] }.
+ * Показывать только visibility === 'list', порядок — как отдал сервер.
+ */
+export function chatgptModelsFrom(body) {
+  return ((body && body.models) || [])
+    .filter((m) => m && m.slug && m.visibility === 'list')
+    .map((m) => ({ slug: m.slug, name: m.display_name || m.slug }));
+}
+
+/**
+ * Перевод — на самой лёгкой модели списка (mini/nano/instant/fast быстрее),
+ * ответы — на первой, главной. Названия моделей не прошиваем: список у
+ * каждого аккаунта свой и меняется.
+ */
+export function pickChatgptModels(list) {
+  const first = (list[0] || {}).slug || '';
+  const light = list.find((m) => /mini|nano|instant|fast|lite/i.test(`${m.slug} ${m.name}`));
+  return { translate: (light && light.slug) || first, reply: first };
+}
+
+export async function listChatgptModels(accessToken, signal) {
+  const res = await fetch(`${OPENAI_BASE}/models`, { signal, headers: { authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) throw await readChatgptError(res);
+  return chatgptModelsFrom(await res.json());
+}
+
+export function buildChatgptBody({ system, text, fence, model, purpose, images, reasoning = true }) {
+  const content = [
+    ...(images || []).map((im) => ({ type: 'input_image', image_url: `data:${im.mime};base64,${im.data}` })),
+    { type: 'input_text', text: wrapSource(text, fence) }
+  ];
+  const body = { model, instructions: system, input: [{ role: 'user', content }], store: false, stream: true };
+  // Перевод думать не должен — это задержка; ответу по V3 средне, как у Groq.
+  if (reasoning) body.reasoning = { effort: purpose === 'reply' ? 'medium' : 'low' };
+  return body;
+}
+
+/** Одно событие потока Responses: кусок текста, конец, расход или ошибка. */
+export function parseChatgptEvent(ev) {
+  const type = (ev && ev.type) || '';
+  if (type === 'response.output_text.delta') return { text: ev.delta || '' };
+  if (type === 'response.completed') {
+    const u = (ev.response && ev.response.usage) || {};
+    return {
+      done: true,
+      usage: { input: u.input_tokens || 0, output: u.output_tokens || 0, cacheRead: 0, cacheWrite: 0 }
+    };
+  }
+  if (type === 'response.failed') {
+    return { error: (ev.response && ev.response.error) || { code: 'unknown', message: 'ответ не удался' } };
+  }
+  if (type === 'response.incomplete') {
+    const why = ev.response && ev.response.incomplete_details && ev.response.incomplete_details.reason;
+    return { error: { code: 'incomplete', message: why ? `ответ не дописан (${why})` : 'ответ не дописан' } };
+  }
+  if (type === 'error') return { error: ev.error || ev };
+  return {};
+}
+
+// Ошибки подписки приходят с кодами subscription_sharing_* — и ответом HTTP,
+// и посреди потока в response.failed.
+export function chatgptErrorFrom(status, error) {
+  const code = (error && (error.code || error.type)) || '';
+  const said = error && error.message ? ` OpenAI: «${String(error.message).slice(0, 160)}»` : '';
+  if (code === 'subscription_sharing_usage_limit_exceeded') {
+    return new TranslationError('Лимит подписки ChatGPT на сейчас исчерпан (он общий с Codex и сбросится сам).', 'rate');
+  }
+  if (code === 'subscription_sharing_user_not_eligible') {
+    return new TranslationError('OpenAI не разрешает этому аккаунту тратить подписку в других программах — нужен Plus или Pro.', 'auth');
+  }
+  if (code === 'subscription_sharing_usage_unavailable') {
+    return new TranslationError(`ChatGPT сейчас не даёт тратить подписку.${said}`, 'server');
+  }
+  if (status === 401) {
+    return new TranslationError('Вход в ChatGPT устарел. Открой Параметры Толмача и войди заново.', 'auth');
+  }
+  if (status === 403) return new TranslationError(`OpenAI не пускает к модели.${said}`, 'auth');
+  if (status === 429) return new TranslationError(`ChatGPT: слишком много запросов подряд.${said}`, 'rate');
+  if (status === 404 || code === 'model_not_found') {
+    return new TranslationError(`Этой модели ChatGPT больше нет — войди в ChatGPT заново, список обновится.${said}`, 'model');
+  }
+  if (status >= 500 || code === 'server_error') return new TranslationError(`ChatGPT сейчас не отвечает (${status || code}).${said}`, 'server');
+  if (status === 400) return new TranslationError(`ChatGPT не принял запрос (400).${said}`, 'argument');
+  return new TranslationError(`ChatGPT: ${code || 'ошибка'}.${said}`, 'api');
+}
+
+async function readChatgptError(res) {
+  let error = null;
+  try {
+    error = (await res.json()).error;
+  } catch {
+    // тело не JSON — хватит кода
+  }
+  return chatgptErrorFrom(res.status, error);
+}
+
+async function readChatgptStream(res, onDelta) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+  let usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let done = false;
+  for (;;) {
+    const { done: ended, value } = await reader.read();
+    if (ended) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let ev;
+      try {
+        ev = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      const step = parseChatgptEvent(ev);
+      if (step.error) throw chatgptErrorFrom(0, step.error);
+      if (step.usage) usage = step.usage;
+      if (step.done) done = true;
+      if (step.text) {
+        full += step.text;
+        if (onDelta) onDelta(step.text, full);
+      }
+    }
+  }
+  // Успех — только response.completed. Поток кончился без него — это обрыв.
+  if (!done) throw new TranslationError('Ответ ChatGPT оборвался на полпути.', 'server');
+  if (!full.trim()) throw new TranslationError('Пустой ответ от ChatGPT.', 'empty');
+  return { text: full, usage };
+}
+
+/** Весь ответ ChatGPT: ответу по V3 с размышлениями 30 с бывает мало. */
+export const CHATGPT_DEADLINE_MS = 90000;
+
+async function runChatgpt({ cfg, model, purpose, system, text, fence, signal, images, onDelta }) {
+  if (!model) {
+    throw new TranslationError('Список моделей ChatGPT пуст. Нажми «Войти через ChatGPT» ещё раз.', 'model');
+  }
+  let reasoning = !cfg.chatgptNoReasoning;
+  for (;;) {
+    let printed = false;
+    const watch = withDeadline(signal, CHATGPT_DEADLINE_MS, firstByteDeadline(purpose));
+    try {
+      const res = await fetch(`${OPENAI_BASE}/responses`, {
+        method: 'POST',
+        signal: watch.signal,
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.chatgptAuth.accessToken}` },
+        body: JSON.stringify(buildChatgptBody({ system, text, fence, model, purpose, images, reasoning }))
+      });
+      if (!res.ok) throw await readChatgptError(res);
+      const out = await readChatgptStream(res, (piece, full) => {
+        watch.started();
+        printed = true;
+        if (onDelta) onDelta(piece, full);
+      });
+      return { ...out, model, how: 'ChatGPT, по подписке', reasoningOff: !reasoning };
+    } catch (raw) {
+      let err = raw;
+      if (!signal?.aborted && isAbortError(raw)) {
+        err = new TranslationError(`ChatGPT: ${raw.message}`, 'server');
+      }
+      // Модель не знает поле reasoning — один раз повторяем без него.
+      if (!signal?.aborted && !printed && reasoning && err instanceof TranslationError && err.kind === 'argument') {
+        reasoning = false;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 // Запрос к API Anthropic. Один на все режимы: меняется только системный промпт.
 async function callApi({ cfg, system, text, fence, maxTokens, signal, effort, images, model }) {
   return fetch(API_URL, {
@@ -1151,10 +1391,10 @@ export async function translateStream({
   });
 
   const started = Date.now();
-  const { text: full, usage, model, how, thinkingStep } = await runModel({
+  const { text: full, usage, model, how, thinkingStep, reasoningOff } = await runModel({
     cfg, purpose: 'translate', system, text, fence, maxTokens, signal, onDelta
   });
-  return { raw: full, usage, model, how, thinkingStep, took: Date.now() - started, ...dir };
+  return { raw: full, usage, model, how, thinkingStep, reasoningOff, took: Date.now() - started, ...dir };
 }
 
 // ——— пакетный перевод страницы —————————————————————————————————
@@ -1451,10 +1691,10 @@ export async function replyStream({ text, context, images, settings, maxTokens =
   // Ответы держим на своей модели (modelFor): их пишут пачками, и им нужно
   // вникать. На Claude — effort high: на low ответы выходили не вникая.
   // Картинки поста видят Gemini и Claude; gpt-oss на Groq только текст.
-  const { text: written, usage, model, how } = await runModel({
+  const { text: written, usage, model, how, reasoningOff } = await runModel({
     cfg, purpose: 'reply', system, text: payload, fence, maxTokens, signal, effort: 'high', images, onDelta
   });
-  return { raw: written, usage, model, how };
+  return { raw: written, usage, model, how, reasoningOff };
 }
 
 const SEG_OPEN = '⟦';

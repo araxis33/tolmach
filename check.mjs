@@ -40,7 +40,7 @@ for (const page of ['popup.html', 'options.html']) {
 
 // ——— синтаксис ————————————————————————————————————————————————
 const dir = mkdtempSync(join(tmpdir(), 'tolmach-'));
-const modules = ['engine.js', 'background.js', 'popup.js', 'options.js'];
+const modules = ['engine.js', 'chatgpt-auth.js', 'background.js', 'popup.js', 'options.js'];
 const scripts = ['content.js'];
 
 for (const file of [...modules, ...scripts]) {

@@ -48,8 +48,27 @@ import {
   groqAttempts,
   GROQ_FALLBACK_MODELS,
   translateStream,
+  chatgptSpare,
+  chatgptModelsFrom,
+  pickChatgptModels,
+  buildChatgptBody,
+  parseChatgptEvent,
+  chatgptErrorFrom,
   TranslationError
 } from './engine.js';
+import {
+  pkceChallenge,
+  buildAuthorizeUrl,
+  isCallbackUrl,
+  readCallback,
+  checkIdClaims,
+  verifyIdToken,
+  authRecord,
+  hasPlanScope,
+  needsRefresh,
+  b64url,
+  REDIRECT_URI
+} from './chatgpt-auth.js';
 
 let failed = 0;
 function check(name, actual, expected) {
@@ -630,6 +649,175 @@ check('подпись: не спрашивали вовсе', thinkingLabel(2, f
   check('в подписи сказано, что Gemini не начал отвечать', /не начал отвечать за 4 с/.test(slow.how || ''), true);
   check('ответам на посты срок не ставим', geminiBudgetFor(settings, 'reply'), 0);
   check('без ключа Groq срок не ставим — отдать некому', geminiBudgetFor({ ...settings, groqKey: '' }, 'translate'), 0);
+  globalThis.fetch = realFetch;
+}
+
+// ——— ChatGPT по подписке: вход ——————————————————————————————————
+{
+  // Пример из RFC 7636 — эталон PKCE.
+  check('PKCE: эталон RFC 7636', await pkceChallenge('dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'),
+    'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM');
+
+  const first = new URL(buildAuthorizeUrl({ clientId: '', hostId: 'urn:uuid:h', state: 's', nonce: 'n', challenge: 'c' }));
+  check('первый вход — регистрация с именем', [first.searchParams.get('client_id'), first.searchParams.get('agent_name_hint')],
+    ['dynamic_agent_client', 'Толмач']);
+  check('адрес возврата — ровно 127.0.0.1:1455/auth/callback', first.searchParams.get('redirect_uri'), 'http://127.0.0.1:1455/auth/callback');
+  check('разрешение тратить подписку запрошено', first.searchParams.get('scope').includes('chatgpt.tokens.use.direct'), true);
+  check('PKCE S256 и ресурс API', [first.searchParams.get('code_challenge_method'), first.searchParams.get('resource')],
+    ['S256', 'https://api.openai.com/v1']);
+  const again = new URL(buildAuthorizeUrl({ clientId: 'app_1', hostId: 'urn:uuid:h', state: 's', nonce: 'n', challenge: 'c', loginHint: 'a@b.c' }));
+  check('повторный вход — свой id и без имени (иначе новая регистрация)',
+    [again.searchParams.get('client_id'), again.searchParams.has('agent_name_hint'), again.searchParams.get('login_hint')],
+    ['app_1', false, 'a@b.c']);
+
+  check('адрес возврата узнаётся', isCallbackUrl(`${REDIRECT_URI}?code=x&state=y`), true);
+  check('чужой путь не узнаётся', isCallbackUrl('http://127.0.0.1:1455/auth/callbackX?code=x'), false);
+  check('чужой хост не узнаётся', isCallbackUrl('https://evil.com/?r=http://127.0.0.1:1455/auth/callback'), false);
+  check('разбор возврата', readCallback(`${REDIRECT_URI}?code=c1&state=s1&client_id=app_9&scope=openid%20chatgpt.tokens.use.direct`),
+    { code: 'c1', state: 's1', clientId: 'app_9', scope: 'openid chatgpt.tokens.use.direct', error: '', errorDescription: '' });
+
+  const claims = { iss: 'https://auth.openai.com', aud: 'app_1', nonce: 'n1', exp: Math.floor(Date.now() / 1000) + 600 };
+  const claimErr = (c) => {
+    try {
+      checkIdClaims(c, { clientId: 'app_1', nonce: 'n1' });
+      return '';
+    } catch (e) {
+      return e.message;
+    }
+  };
+  check('верный ID-токен принят', claimErr(claims), '');
+  check('чужой nonce отклонён', /не совпал/.test(claimErr({ ...claims, nonce: 'x' })), true);
+  check('чужое приложение отклонено', /другому приложению/.test(claimErr({ ...claims, aud: 'app_2' })), true);
+  check('чужой издатель отклонён', /не auth\.openai\.com/.test(claimErr({ ...claims, iss: 'https://evil' })), true);
+
+  // Подпись RS256 настоящим ключом: своя пара, свой JWKS.
+  const pair = await crypto.subtle.generateKey(
+    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+  const jwk = { ...(await crypto.subtle.exportKey('jwk', pair.publicKey)), kid: 'k1' };
+  const enc = (o) => b64url(new TextEncoder().encode(JSON.stringify(o)));
+  const signed = `${enc({ alg: 'RS256', kid: 'k1' })}.${enc({ ...claims, email: 'me@x.io', sub: 'u1' })}`;
+  const sig = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', pair.privateKey, new TextEncoder().encode(signed)));
+  const good = await verifyIdToken(`${signed}.${b64url(sig)}`, { clientId: 'app_1', nonce: 'n1', jwks: [jwk] });
+  check('подпись RS256 проверена, почта прочитана', good.email, 'me@x.io');
+  let forged = '';
+  try {
+    await verifyIdToken(`${signed.slice(0, -2)}AA.${b64url(sig)}`, { clientId: 'app_1', nonce: 'n1', jwks: [jwk] });
+  } catch (e) {
+    forged = e.message;
+  }
+  check('подделанный токен отклонён', forged !== '', true);
+
+  const rec = authRecord({ access_token: 'a1', refresh_token: 'r1', expires_in: 3600, scope: 'openid chatgpt.tokens.use.direct', id_token: 't' },
+    { email: 'me@x.io', sub: 'u1' }, 'app_1', {}, 1000);
+  check('запись входа', [rec.accessToken, rec.refreshToken, rec.expiresAt, rec.email], ['a1', 'r1', 1000 + 3600000, 'me@x.io']);
+  const rotated = authRecord({ access_token: 'a2', expires_in: 3600 }, null, 'app_1', rec, 5000);
+  check('обновление без нового долгого токена держит старый и почту', [rotated.refreshToken, rotated.email, rotated.scope],
+    ['r1', 'me@x.io', rec.scope]);
+  check('разрешение на подписку видно', [hasPlanScope(rec.scope), hasPlanScope('openid email')], [true, false]);
+  check('токен обновляется за 2 минуты до конца', [needsRefresh(rec, rec.expiresAt - 60000), needsRefresh(rec, 1000)], [true, false]);
+}
+
+// ——— ChatGPT по подписке: запросы ——————————————————————————————————
+{
+  const list = chatgptModelsFrom({ models: [
+    { slug: 'gpt-x', display_name: 'GPT X', visibility: 'list' },
+    { slug: 'gpt-hidden', display_name: 'H', visibility: 'hide' },
+    { slug: 'gpt-x-mini', display_name: 'GPT X mini', visibility: 'list' }
+  ] });
+  check('скрытые модели отброшены, порядок сервера сохранён', list.map((m) => m.slug), ['gpt-x', 'gpt-x-mini']);
+  check('перевод — лёгкая модель, ответы — главная', pickChatgptModels(list), { translate: 'gpt-x-mini', reply: 'gpt-x' });
+  check('без лёгкой — всё на первой', pickChatgptModels(list.slice(0, 1)), { translate: 'gpt-x', reply: 'gpt-x' });
+
+  const body = buildChatgptBody({ system: 'SYS', text: 'hi', fence: 'f', model: 'gpt-x', purpose: 'translate',
+    images: [{ mime: 'image/png', data: 'AAA' }] });
+  check('store:false и stream:true обязательны', [body.store, body.stream], [false, true]);
+  check('системный промпт — в instructions, роли system нет', [body.instructions, body.input.length, body.input[0].role], ['SYS', 1, 'user']);
+  check('запрещённые поля не шлются', ['temperature', 'max_output_tokens', 'top_p', 'metadata'].some((k) => k in body), false);
+  check('картинка — data-адрес', body.input[0].content[0].image_url, 'data:image/png;base64,AAA');
+  check('переводу low, ответу medium', [body.reasoning.effort,
+    buildChatgptBody({ system: '', text: '', fence: 'f', model: 'm', purpose: 'reply' }).reasoning.effort], ['low', 'medium']);
+  check('без reasoning — поля нет', 'reasoning' in buildChatgptBody({ system: '', text: '', fence: 'f', model: 'm', reasoning: false }), false);
+
+  check('кусок текста', parseChatgptEvent({ type: 'response.output_text.delta', delta: 'Hel' }), { text: 'Hel' });
+  check('конец и расход', parseChatgptEvent({ type: 'response.completed', response: { usage: { input_tokens: 5, output_tokens: 7 } } }),
+    { done: true, usage: { input: 5, output: 7, cacheRead: 0, cacheWrite: 0 } });
+  check('лимит посреди потока', chatgptErrorFrom(0, parseChatgptEvent({ type: 'response.failed',
+    response: { error: { code: 'subscription_sharing_usage_limit_exceeded' } } }).error).kind, 'rate');
+  check('не тот тариф — auth', chatgptErrorFrom(403, { code: 'subscription_sharing_user_not_eligible' }).kind, 'auth');
+  check('401 — войти заново', /войди заново/.test(chatgptErrorFrom(401, null).message), true);
+  check('400 — argument', chatgptErrorFrom(400, { message: 'Unsupported parameter: reasoning' }).kind, 'argument');
+
+  const busy = new TranslationError('x', 'server');
+  check('ChatGPT занят — выручает Gemini', chatgptSpare({ geminiKey: 'k', groqKey: 'g' }, busy, false), 'gemini');
+  check('нет Gemini — Groq', chatgptSpare({ groqKey: 'g' }, busy, false), 'groq');
+  check('уже печатал — никто', chatgptSpare({ geminiKey: 'k' }, busy, true), '');
+  check('дурной запрос — никто', chatgptSpare({ geminiKey: 'k' }, new TranslationError('x', 'argument'), false), '');
+
+  // Сквозной путь через движок с подменённой сетью.
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  const sse = (events) => new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), { status: 200 });
+  const ok = () => sse([
+    { type: 'response.created' },
+    { type: 'response.output_text.delta', delta: 'Nice ' },
+    { type: 'response.output_text.delta', delta: 'weather today' },
+    { type: 'response.completed', response: { usage: { input_tokens: 3, output_tokens: 4 } } }
+  ]);
+  const base = { ...DEFAULTS, provider: 'chatgpt', native: 'ru', foreign: 'en',
+    chatgptAuth: { accessToken: 'tok', expiresAt: Date.now() + 3600000 }, chatgptModel: 'gpt-x-mini', chatgptReplyModel: 'gpt-x',
+    geminiKey: 'k', geminiModel: 'lite-m', geminiAvailable: ['lite-m'] };
+
+  globalThis.fetch = async (url, init) => {
+    sent.push({ url: String(url), auth: init.headers.authorization, body: JSON.parse(init.body) });
+    return ok();
+  };
+  const out = await translateStream({ text: 'Сегодня хорошая погода', settings: base });
+  check('перевод через ChatGPT', [out.raw, out.model, out.how], ['Nice weather today', 'gpt-x-mini', 'ChatGPT, по подписке']);
+  check('ушёл в /v1/responses с токеном входа', [sent[0].url, sent[0].auth], ['https://api.openai.com/v1/responses', 'Bearer tok']);
+
+  // Модель не знает reasoning — один повтор без поля, и это запоминается.
+  sent.length = 0;
+  globalThis.fetch = async (url, init) => {
+    const b = JSON.parse(init.body);
+    sent.push(b);
+    if (b.reasoning) return new Response(JSON.stringify({ error: { message: 'Unsupported parameter: reasoning' } }), { status: 400 });
+    return ok();
+  };
+  const noR = await translateStream({ text: 'Сегодня хорошая погода', settings: base });
+  check('400 на reasoning — повтор без него', [sent.length, 'reasoning' in sent[1], noR.reasoningOff], [2, false, true]);
+
+  // Подписка упёрлась в лимит — доделывает Gemini, и это видно в подписи.
+  const hosts = [];
+  globalThis.fetch = async (url) => {
+    const host = new URL(String(url)).host;
+    hosts.push(host);
+    if (host === 'api.openai.com') {
+      return new Response(JSON.stringify({ error: { code: 'subscription_sharing_usage_limit_exceeded', message: 'limit' } }), { status: 429 });
+    }
+    return new Response(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Привет' }] }, finishReason: 'STOP' }] })}\n\n`, { status: 200 });
+  };
+  const spared = await translateStream({ text: 'Hello there, friend', settings: base });
+  check('лимит подписки — перевёл Gemini', [spared.raw.trim(), spared.model], ['Привет', 'lite-m']);
+  check('в подписи: выручил Gemini и почему', /выручил Gemini — Лимит подписки/.test(spared.how || ''), true);
+  check('к ChatGPT один запрос — лимит не долбим', hosts.filter((h) => h === 'api.openai.com').length, 1);
+
+  // Поток кончился без response.completed — это обрыв, а не успех.
+  globalThis.fetch = async () => sse([{ type: 'response.output_text.delta', delta: 'Half' }]);
+  let cut = null;
+  try {
+    await translateStream({ text: 'Hello there, friend', settings: { ...base, geminiKey: '' } });
+  } catch (e) {
+    cut = e;
+  }
+  check('обрыв без completed — ошибка', /оборвался/.test(cut && cut.message), true);
+
+  let nologin = null;
+  try {
+    await translateStream({ text: 'Hello', settings: { ...base, chatgptAuth: null } });
+  } catch (e) {
+    nologin = e;
+  }
+  check('без входа — понятная подсказка', [nologin && nologin.kind, /Войти через ChatGPT/.test(nologin && nologin.message)], ['nokey', true]);
   globalThis.fetch = realFetch;
 }
 

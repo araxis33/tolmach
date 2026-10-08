@@ -15,19 +15,49 @@
   <section class="card">
     <h2>Чем переводить</h2>
     <p class="help">
-      Gemini от Google работает бесплатно, в пределах дневного лимита. Claude от Anthropic
-      пишет чуть живее, но платно: за каждый запрос со счёта, который пополняешь сам.
+      ChatGPT работает по твоей подписке Plus — без ключей и без доплат. Gemini от Google
+      работает бесплатно, в пределах дневного лимита. Claude от Anthropic пишет чуть живее,
+      но платно: за каждый запрос со счёта, который пополняешь сам.
     </p>
     <div class="grid">
       <label>
         <span>Модель</span>
         <select id="provider">
+          <option value="chatgpt">ChatGPT — по подписке Plus</option>
           <option value="gemini">Gemini — бесплатно</option>
           <option value="groq">Groq — бесплатно, быстро</option>
           <option value="claude">Claude — платно, ключ Anthropic</option>
         </select>
       </label>
     </div>
+  </section>
+
+  <section class="card" id="chatgptCard">
+    <h2>ChatGPT — по подписке</h2>
+    <p class="help">
+      Нажми кнопку — откроется страница входа ChatGPT. Выбери свой аккаунт и разреши Толмачу
+      пользоваться подпиской (пункт про план оставь включённым). Вкладка закроется сама.
+      Переводы тратят лимиты Plus — те же, что у Codex. Отдельно ничего не платится.
+    </p>
+    <div class="row">
+      <button class="primary" id="chatgptLogin">Войти через ChatGPT</button>
+      <button class="ghost hidden" id="chatgptLogout">Выйти</button>
+    </div>
+    <div class="status hidden" id="chatgptStatus"></div>
+    <div class="grid hidden" id="chatgptModels">
+      <label>
+        <span>Модель для перевода</span>
+        <select id="chatgptModel"></select>
+      </label>
+      <label>
+        <span>Модель для ответов</span>
+        <select id="chatgptReplyModel"></select>
+      </label>
+    </div>
+    <p class="help">
+      Упрётся подписка в лимит или ChatGPT не ответит — перевод доделают бесплатные
+      Gemini и Groq ниже, а под переводом будет видно, кто выручил.
+    </p>
   </section>
 
   <section class="card" id="geminiCard">

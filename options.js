@@ -34,6 +34,8 @@ const status = $('status');
 
 const FIELDS = {
   provider: { el: () => $('provider'), prop: 'value' },
+  chatgptModel: { el: () => $('chatgptModel'), prop: 'value' },
+  chatgptReplyModel: { el: () => $('chatgptReplyModel'), prop: 'value' },
   geminiKey: { el: () => $('geminiKey'), prop: 'value' },
   geminiModel: { el: () => $('geminiModel'), prop: 'value' },
   geminiReplyModel: { el: () => $('geminiReplyModel'), prop: 'value' },
@@ -74,6 +76,7 @@ async function init() {
   fillGeminiModels(
     pickGeminiModels([settings.geminiModel, settings.geminiReplyModel, DEFAULTS.geminiModel, DEFAULTS.geminiReplyModel]).available
   );
+  fillChatgptModels(settings.chatgptAvailable);
 
   for (const [key, field] of Object.entries(FIELDS)) {
     field.el()[field.prop] = settings[key];
@@ -110,6 +113,17 @@ async function init() {
     $('groqReveal').textContent = hidden ? 'Скрыть' : 'Показать';
   });
   $('groqTest').addEventListener('click', testGroq);
+
+  $('chatgptLogin').addEventListener('click', loginChatgpt);
+  $('chatgptLogout').addEventListener('click', logoutChatgpt);
+  await paintChatgpt();
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'session' && changes.chatgptLoginStatus) onChatgptStatus(changes.chatgptLoginStatus.newValue);
+    if (area === 'local' && changes.provider) {
+      $('provider').value = changes.provider.newValue || DEFAULTS.provider;
+      paintProvider();
+    }
+  });
 
   await paintSpend();
   $('balance').addEventListener('input', () => setTimeout(paintSpend, 250));
@@ -427,20 +441,97 @@ function setGeminiStatus(text, kind) {
   box.classList.remove('hidden');
 }
 
+// ——— ChatGPT по подписке ——————————————————————————————————————————
+// Вход идёт в отдельной вкладке, а заканчивает его service worker. Сюда итог
+// приходит через storage.session — эта страница могла и не дожить до конца.
+
+function fillChatgptModels(list) {
+  const models = Array.isArray(list) ? list : [];
+  for (const id of ['chatgptModel', 'chatgptReplyModel']) {
+    const select = $(id);
+    const current = select.value;
+    fillSelect(select, models.map((m) => [m.slug, m.name]));
+    if (current && models.some((m) => m.slug === current)) select.value = current;
+  }
+  $('chatgptModels').classList.toggle('hidden', !models.length);
+}
+
+function setChatgptStatus(text, kind) {
+  const box = $('chatgptStatus');
+  box.textContent = text;
+  box.className = `status ${kind}`;
+  box.classList.remove('hidden');
+}
+
+async function paintChatgpt() {
+  const stored = await chrome.storage.local.get(['chatgptAuth', 'chatgptAvailable', 'chatgptModel', 'chatgptReplyModel']);
+  const auth = stored.chatgptAuth;
+  fillChatgptModels(stored.chatgptAvailable);
+  if (stored.chatgptModel) $('chatgptModel').value = stored.chatgptModel;
+  if (stored.chatgptReplyModel) $('chatgptReplyModel').value = stored.chatgptReplyModel;
+  $('chatgptLogout').classList.toggle('hidden', !auth);
+  $('chatgptLogin').textContent = auth ? 'Войти заново' : 'Войти через ChatGPT';
+  if (auth) setChatgptStatus(`Вход выполнен: ${auth.email || 'аккаунт ChatGPT'}.`, 'ok');
+  else $('chatgptStatus').classList.add('hidden');
+}
+
+async function loginChatgpt() {
+  $('chatgptLogin').disabled = true;
+  setChatgptStatus('Открыл вкладку входа ChatGPT — войди там и разреши доступ.', '');
+  const res = await chrome.runtime.sendMessage({ type: 'chatgpt-login' }).catch(() => null);
+  if (!res || !res.ok) {
+    $('chatgptLogin').disabled = false;
+    setChatgptStatus(res ? res.message : 'Связь с расширением оборвалась. Попробуй ещё раз.', 'bad');
+  }
+}
+
+async function onChatgptStatus(st) {
+  if (!st || st.phase === 'waiting') return;
+  $('chatgptLogin').disabled = false;
+  if (st.phase === 'error') {
+    setChatgptStatus(st.message, 'bad');
+    return;
+  }
+  await paintChatgpt();
+  $('provider').value = 'chatgpt';
+  paintProvider();
+  setChatgptStatus(`Вход выполнен: ${st.message || 'аккаунт ChatGPT'}. Пробую перевести…`, '');
+  translateProbe((text, kind, note) => {
+    // Перевод мог сделать запасной Gemini — тогда «работает» было бы неправдой.
+    if (kind === 'ok' && /выручил/.test(note)) {
+      setChatgptStatus(`Вход есть, но ChatGPT не перевёл — сделал запасной. ${note}`, 'bad');
+      return;
+    }
+    setChatgptStatus(
+      kind === 'ok'
+        ? `${text} Перевод — ${$('chatgptModel').selectedOptions[0]?.textContent || ''}, ответы — ${$('chatgptReplyModel').selectedOptions[0]?.textContent || ''}.`
+        : text,
+      kind
+    );
+  });
+}
+
+async function logoutChatgpt() {
+  $('chatgptLogout').disabled = true;
+  await chrome.runtime.sendMessage({ type: 'chatgpt-logout' }).catch(() => null);
+  $('chatgptLogout').disabled = false;
+  await paintChatgpt();
+}
+
 // Короткий настоящий перевод через тот же путь, что у карточки на странице.
 function translateProbe(done) {
   const port = chrome.runtime.connect({ name: 'tolmach' });
   let answered = false;
-  const finish = (text, kind) => {
+  const finish = (text, kind, note = '') => {
     if (answered) return;
     answered = true;
     port.disconnect();
-    done(text, kind);
+    done(text, kind, note);
   };
   port.onMessage.addListener((msg) => {
     if (msg.type === 'done') {
       const sample = msg.raw.split('@@')[0].trim().split('\n')[0];
-      finish(`Работает. «Сегодня хорошая погода» → «${sample}».`, 'ok');
+      finish(`Работает. «Сегодня хорошая погода» → «${sample}».`, 'ok', msg.note || '');
     } else if (msg.type === 'error') {
       finish(msg.message, 'bad');
     }
