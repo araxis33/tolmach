@@ -398,6 +398,15 @@ chrome.runtime.onConnect.addListener((port) => {
   };
 
   port.onMessage.addListener(async (req) => {
+    // 08.10: ChatGPT молча думает дольше 30 с, а Chrome усыпляет service worker
+    // после 30 с без вызовов API расширения — воркер умирал посреди ответа,
+    // срок не срабатывал, карточка крутилась вечно. Пульс раз в 10 с держит
+    // воркер живым и показывает в карточке, сколько уже ждём.
+    const began = Date.now();
+    const pulse = setInterval(() => {
+      chrome.runtime.getPlatformInfo().catch(() => {});
+      post({ type: 'wait', secs: Math.round((Date.now() - began) / 1000) });
+    }, 10000);
     try {
       if (req.type === 'translate') {
         await handleTranslate(req, post, controller.signal);
@@ -413,6 +422,8 @@ chrome.runtime.onConnect.addListener((port) => {
         kind: err instanceof TranslationError ? err.kind : 'unknown',
         message: describeError(err)
       });
+    } finally {
+      clearInterval(pulse);
     }
   });
 });

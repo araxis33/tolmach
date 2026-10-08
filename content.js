@@ -706,13 +706,21 @@
       return;
     }
 
+    // Фон умер посреди работы — сказать, а не крутиться вечно (08.10 так висел ответ).
+    let finished = false;
+    const mine = port;
     port.onDisconnect.addListener(() => {
-      port = null;
+      if (port === mine) port = null;
+      if (!finished && card) showError('Связь с расширением оборвалась. Нажми ещё раз.', 'unknown');
     });
 
     port.onMessage.addListener((msg) => {
       if (!card) return;
-      if (msg.type === 'start') {
+      if (msg.type === 'done' || msg.type === 'error') finished = true;
+      if (msg.type === 'wait') {
+        // Пока текста нет — показываем, сколько ждём; пошёл текст — не мешаем.
+        if (!card.main.textContent) card.dir.textContent = `думает ${msg.secs} с…`;
+      } else if (msg.type === 'start') {
         card.dir.textContent = `${SHORT[msg.from] || '?'} → ${SHORT[msg.to] || '?'}`;
         card.dir.title = `Перевод на ${LANG_LABEL[msg.to] || msg.to}`;
       } else if (msg.type === 'delta') {
@@ -759,13 +767,22 @@
       return;
     }
 
+    let finished = false;
+    const mine = port;
     port.onDisconnect.addListener(() => {
-      port = null;
+      if (port === mine) port = null;
+      if (!finished && card) {
+        card.replies.classList.add('hidden');
+        showError('Связь с расширением оборвалась. Нажми ещё раз.', 'unknown');
+      }
     });
 
     port.onMessage.addListener((msg) => {
       if (!card) return;
-      if (msg.type === 'reply-start') {
+      if (msg.type === 'reply-done' || msg.type === 'error') finished = true;
+      if (msg.type === 'wait') {
+        if (!card.replies.textContent) card.dir.textContent = `Ответ · думает ${msg.secs} с…`;
+      } else if (msg.type === 'reply-start') {
         card.dir.textContent = 'Ответ';
         card.dir.title = 'Варианты ответа по REPLY PROMPT V3';
       } else if (msg.type === 'reply-delta') {
