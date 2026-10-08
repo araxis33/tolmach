@@ -1185,7 +1185,7 @@ async function readChatgptError(res) {
   return chatgptErrorFrom(res.status, error);
 }
 
-async function readChatgptStream(res, onDelta) {
+async function readChatgptStream(res, onDelta, onEvent) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -1208,6 +1208,7 @@ async function readChatgptStream(res, onDelta) {
       } catch {
         continue;
       }
+      if (onEvent) onEvent(ev);
       const step = parseChatgptEvent(ev);
       if (step.error) throw chatgptErrorFrom(0, step.error);
       if (step.usage) usage = step.usage;
@@ -1224,8 +1225,15 @@ async function readChatgptStream(res, onDelta) {
   return { text: full, usage };
 }
 
-/** Весь ответ ChatGPT: ответу по V3 с размышлениями 30 с бывает мало. */
-export const CHATGPT_DEADLINE_MS = 90000;
+/**
+ * Весь ответ ChatGPT. 08.10: ответ по V3 ни разу не дошёл — модель молча думает
+ * над 11 вариантами дольше 25 с, а срок считался до первого слова. Теперь
+ * короткий срок снимает ЛЮБОЕ событие потока (сервер принял и работает), а
+ * на раздумья ответу даётся три минуты, переводу — минута.
+ */
+export function chatgptDeadline(purpose) {
+  return purpose === 'reply' ? 180000 : 60000;
+}
 
 async function runChatgpt({ cfg, model, purpose, system, text, fence, signal, images, onDelta }) {
   if (!model) {
@@ -1234,7 +1242,9 @@ async function runChatgpt({ cfg, model, purpose, system, text, fence, signal, im
   let reasoning = !cfg.chatgptNoReasoning;
   for (;;) {
     let printed = false;
-    const watch = withDeadline(signal, CHATGPT_DEADLINE_MS, firstByteDeadline(purpose));
+    let heard = false;
+    const began = Date.now();
+    const watch = withDeadline(signal, chatgptDeadline(purpose), firstByteDeadline(purpose));
     try {
       const res = await fetch(`${OPENAI_BASE}/responses`, {
         method: 'POST',
@@ -1247,12 +1257,22 @@ async function runChatgpt({ cfg, model, purpose, system, text, fence, signal, im
         watch.started();
         printed = true;
         if (onDelta) onDelta(piece, full);
+      }, () => {
+        heard = true;
+        watch.started();
       });
       return { ...out, model, how: 'ChatGPT, по подписке', reasoningOff: !reasoning };
     } catch (raw) {
       let err = raw;
       if (!signal?.aborted && isAbortError(raw)) {
-        err = new TranslationError(`ChatGPT: ${raw.message}`, 'server');
+        // Две разные беды: сервер молчал вовсе или принял и думал слишком долго.
+        const secs = Math.round((Date.now() - began) / 1000);
+        err = new TranslationError(
+          heard
+            ? `ChatGPT (${model}) принял запрос, но думал ${secs} с и не успел.`
+            : `ChatGPT (${model}) не откликнулся за ${secs} с.`,
+          'server'
+        );
       }
       // Модель не знает поле reasoning — один раз повторяем без него.
       if (!signal?.aborted && !printed && reasoning && err instanceof TranslationError && err.kind === 'argument') {

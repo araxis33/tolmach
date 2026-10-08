@@ -820,6 +820,32 @@ check('подпись: не спрашивали вовсе', thinkingLabel(2, f
   }
   check('обрыв без completed — ошибка', /оборвался/.test(cut && cut.message), true);
 
+  // 08.10: ChatGPT молча думает дольше короткого срока — это не зависание. Сервер
+  // сразу шлёт response.created, слово приходит через 8 с (срок перевода — 7 с).
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(c) {
+      const enc = new TextEncoder();
+      c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'response.created' })}\n\n`));
+      setTimeout(() => {
+        c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'Thought it through' })}\n\n` +
+          `data: ${JSON.stringify({ type: 'response.completed', response: {} })}\n\n`));
+        c.close();
+      }, 8000);
+    }
+  }), { status: 200 });
+  const thinker = await translateStream({ text: 'Сегодня хорошая погода', settings: base });
+  check('думал 8 с после отклика — ответ дошёл, не оборван', thinker.raw, 'Thought it through');
+
+  // Сервер не откликнулся вовсе — через короткий срок, и сказано именно это.
+  globalThis.fetch = async (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+  let silent = null;
+  try {
+    await translateStream({ text: 'Сегодня хорошая погода', settings: base });
+  } catch (e) {
+    silent = e;
+  }
+  check('молчание — «не откликнулся» с именем модели', /gpt-x-mini\) не откликнулся за 7 с/.test(silent && silent.message), true);
+
   let nologin = null;
   try {
     await translateStream({ text: 'Hello', settings: { ...base, chatgptAuth: null } });
