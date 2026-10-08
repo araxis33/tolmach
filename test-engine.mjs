@@ -734,8 +734,8 @@ check('подпись: не спрашивали вовсе', thinkingLabel(2, f
   check('системный промпт — в instructions, роли system нет', [body.instructions, body.input.length, body.input[0].role], ['SYS', 1, 'user']);
   check('запрещённые поля не шлются', ['temperature', 'max_output_tokens', 'top_p', 'metadata'].some((k) => k in body), false);
   check('картинка — data-адрес', body.input[0].content[0].image_url, 'data:image/png;base64,AAA');
-  check('переводу low, ответу medium', [body.reasoning.effort,
-    buildChatgptBody({ system: '', text: '', fence: 'f', model: 'm', purpose: 'reply' }).reasoning.effort], ['low', 'medium']);
+  check('и переводу, и ответу low (ответ на medium тормозил)', [body.reasoning.effort,
+    buildChatgptBody({ system: '', text: '', fence: 'f', model: 'm', purpose: 'reply' }).reasoning.effort], ['low', 'low']);
   check('без reasoning — поля нет', 'reasoning' in buildChatgptBody({ system: '', text: '', fence: 'f', model: 'm', reasoning: false }), false);
 
   check('кусок текста', parseChatgptEvent({ type: 'response.output_text.delta', delta: 'Hel' }), { text: 'Hel' });

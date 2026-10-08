@@ -520,7 +520,8 @@ async function handleReply(req, post, signal) {
     left: await moneyLeft(),
     // Если Gemini лёг и ответ дописал Claude — это должно быть видно в карточке:
     // иначе трата появится в счётчике денег без объяснения.
-    note: result.how ? `${result.model}  ·  ${result.how}` : ''
+    // Секунды — чтобы жалобу «тормоз» мерить, как у перевода, а не гадать.
+    note: result.how ? `${result.model}  ·  ${(result.took / 1000).toFixed(1)} с  ·  ${result.how}` : ''
   });
 }
 

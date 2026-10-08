@@ -1121,8 +1121,9 @@ export function buildChatgptBody({ system, text, fence, model, purpose, images, 
     { type: 'input_text', text: wrapSource(text, fence) }
   ];
   const body = { model, instructions: system, input: [{ role: 'user', content }], store: false, stream: true };
-  // Перевод думать не должен — это задержка; ответу по V3 средне, как у Groq.
-  if (reasoning) body.reasoning = { effort: purpose === 'reply' ? 'medium' : 'low' };
+  // Перевод думать не должен — это задержка. Ответу тоже low: 08.10 на medium
+  // ответ по V3 шёл так долго, что выглядел зависшим («хотел быстро, а опять тормоз»).
+  if (reasoning) body.reasoning = { effort: 'low' };
   return body;
 }
 
@@ -1715,10 +1716,11 @@ export async function replyStream({ text, context, images, settings, maxTokens =
   // Ответы держим на своей модели (modelFor): их пишут пачками, и им нужно
   // вникать. На Claude — effort high: на low ответы выходили не вникая.
   // Картинки поста видят Gemini и Claude; gpt-oss на Groq только текст.
+  const started = Date.now();
   const { text: written, usage, model, how, reasoningOff } = await runModel({
     cfg, purpose: 'reply', system, text: payload, fence, maxTokens, signal, effort: 'high', images, onDelta
   });
-  return { raw: written, usage, model, how, reasoningOff };
+  return { raw: written, usage, model, how, reasoningOff, took: Date.now() - started };
 }
 
 const SEG_OPEN = '⟦';
