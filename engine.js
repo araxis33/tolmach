@@ -54,6 +54,9 @@ export const DEFAULTS = {
   // Продавец закрепляется в имени модели «<peerId>@<модель>»: GesundAI даёт больше
   // всего ANTS на доллар, gpt-6-astra переводит за ~3 с (замер 27.10).
   antseedModel: '983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-astra',
+  // Ответ по V3 на astra и sol молчит дольше 25 с (прокси не шлёт событий раздумья);
+  // luna даёт первое слово за ~8 с, весь ответ за ~12 с (замер 27.10).
+  antseedReplyModel: '983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna',
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
   foreign: 'en',       // рабочий второй язык
@@ -322,7 +325,11 @@ export function modelFor(cfg, purpose) {
       : cfg.chatgptModel || first;
   }
   if (providerOf(cfg) === 'groq') return cfg.groqModel || GROQ_FALLBACK_MODELS[0];
-  if (providerOf(cfg) === 'antseed') return cfg.antseedModel || DEFAULTS.antseedModel;
+  if (providerOf(cfg) === 'antseed') {
+    return purpose === 'reply'
+      ? cfg.antseedReplyModel || DEFAULTS.antseedReplyModel
+      : cfg.antseedModel || DEFAULTS.antseedModel;
+  }
   if (providerOf(cfg) === 'claude') {
     return purpose === 'reply' ? cfg.replyModel || cfg.model : cfg.model;
   }
