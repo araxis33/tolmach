@@ -351,7 +351,8 @@ function paintProvider() {
   const needsClaudeKey = claude || $('claudeWhenGeminiBusy').checked;
   $('claudeCard').classList.toggle('hidden', !needsClaudeKey);
   $('moneyCard').classList.toggle('hidden', !needsClaudeKey);
-  $('geminiCard').classList.toggle('hidden', claude || $('provider').value === 'groq');
+  $('geminiCard').classList.toggle('hidden', claude || ['groq', 'antseed'].includes($('provider').value));
+  $('antseedCard').classList.toggle('hidden', $('provider').value !== 'antseed');
 }
 
 function fillGeminiModels(ids) {

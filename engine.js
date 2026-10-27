@@ -7,6 +7,9 @@ const ANTHROPIC_VERSION = '2023-06-01';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
 const OPENAI_BASE = 'https://api.openai.com/v1';
+// AntSeed (27.10.2026): рынок моделей на Base, платится USDC с баланса приложения.
+// Приложение AntSeed на этом компьютере держит прокси в формате OpenAI; ключ ему не нужен.
+const ANTSEED_BASE = 'http://127.0.0.1:8377/v1';
 
 export const DEFAULTS = {
   // Gemini по умолчанию: у Google есть бесплатная квота, у Anthropic — нет.
@@ -48,6 +51,9 @@ export const DEFAULTS = {
   // Подстраховка Gemini/Groq, когда ChatGPT не смог. ВЫКЛЮЧЕНА по его решению 08.10:
   // «отключить эти костыли пока на месяц» — ошибка ChatGPT показывается как есть.
   spareWhenChatgptFails: false,
+  // Продавец закрепляется в имени модели «<peerId>@<модель>»: GesundAI даёт больше
+  // всего ANTS на доллар, gpt-6-astra переводит за ~3 с (замер 27.10).
+  antseedModel: '983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-astra',
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
   foreign: 'en',       // рабочий второй язык
@@ -295,7 +301,7 @@ function buildBody({ model, system, text, maxTokens, fence, effort = 'low', imag
 // ——— какой ключ и какая модель ——————————————————————————————————
 
 export function providerOf(cfg) {
-  if (cfg.provider === 'claude' || cfg.provider === 'groq' || cfg.provider === 'chatgpt') return cfg.provider;
+  if (['claude', 'groq', 'chatgpt', 'antseed'].includes(cfg.provider)) return cfg.provider;
   return 'gemini';
 }
 
@@ -303,6 +309,7 @@ export function providerOf(cfg) {
 export function activeKey(cfg) {
   const p = providerOf(cfg);
   if (p === 'chatgpt') return (cfg.chatgptAuth && cfg.chatgptAuth.accessToken) || '';
+  if (p === 'antseed') return 'antseed';   // прокси приложения ключ не проверяет
   return p === 'claude' ? cfg.apiKey || '' : p === 'groq' ? cfg.groqKey || '' : cfg.geminiKey || '';
 }
 
@@ -315,6 +322,7 @@ export function modelFor(cfg, purpose) {
       : cfg.chatgptModel || first;
   }
   if (providerOf(cfg) === 'groq') return cfg.groqModel || GROQ_FALLBACK_MODELS[0];
+  if (providerOf(cfg) === 'antseed') return cfg.antseedModel || DEFAULTS.antseedModel;
   if (providerOf(cfg) === 'claude') {
     return purpose === 'reply' ? cfg.replyModel || cfg.model : cfg.model;
   }
@@ -368,6 +376,9 @@ async function runModel({ cfg, purpose, system, text, fence, maxTokens, signal, 
   }
   if (providerOf(cfg) === 'groq') {
     return runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, onDelta });
+  }
+  if (providerOf(cfg) === 'antseed') {
+    return runAntseed({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta });
   }
   if (providerOf(cfg) === 'gemini') {
     // Пока на экран ничего не ушло, работу можно доделать на другом провайдере.
@@ -993,7 +1004,7 @@ export function parseGroqChunk(ev) {
   return { text, usage, finish: (choice && choice.finish_reason) || '' };
 }
 
-async function readGroqStream(res, onDelta) {
+async function readGroqStream(res, onDelta, errorFrom = groqErrorFrom, who = 'Groq') {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -1015,7 +1026,7 @@ async function readGroqStream(res, onDelta) {
       } catch {
         continue;
       }
-      if (ev.error) throw groqErrorFrom(0, ev.error);
+      if (ev.error) throw errorFrom(0, ev.error);
       const chunk = parseGroqChunk(ev);
       if (chunk.usage) usage = chunk.usage;
       if (chunk.text) {
@@ -1024,7 +1035,7 @@ async function readGroqStream(res, onDelta) {
       }
     }
   }
-  if (!full.trim()) throw new TranslationError('Пустой ответ от Groq.', 'empty');
+  if (!full.trim()) throw new TranslationError(`Пустой ответ от ${who}.`, 'empty');
   return { text: full, usage };
 }
 
@@ -1065,6 +1076,55 @@ async function runGroq({ cfg, purpose, system, text, fence, maxTokens, signal, o
     }
   }
   throw lastError || new TranslationError('Groq не ответил.', 'server');
+}
+
+// ——— AntSeed ————————————————————————————————————————————————————
+// Формат тот же, что у Groq (OpenAI chat/completions с потоком), только адрес —
+// прокси приложения AntSeed на этом компьютере, а платит баланс приложения.
+
+export function antseedErrorFrom(status, error) {
+  const said = error && error.message ? ` AntSeed: «${String(error.message).slice(0, 160)}»` : '';
+  if (status === 0) return new TranslationError('Приложение AntSeed не открыто — запусти «Antseed AI VPN» и подожди 15 с.', 'server');
+  if (status === 402) return new TranslationError(`На балансе AntSeed кончились деньги — пополни в приложении.${said}`, 'auth');
+  if (status === 429) return new TranslationError(`AntSeed: продавец просит подождать.${said}`, 'rate');
+  if (status >= 500) return new TranslationError(`AntSeed сейчас не отвечает (${status}).${said}`, 'server');
+  return new TranslationError(`AntSeed не принял запрос (${status}).${said}`, 'argument');
+}
+
+async function runAntseed({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta }) {
+  const watch = withDeadline(signal, ANSWER_DEADLINE_MS, firstByteDeadline(purpose));
+  try {
+    let res;
+    try {
+      res = await fetch(`${ANTSEED_BASE}/chat/completions`, {
+        method: 'POST',
+        signal: watch.signal,
+        headers: { 'content-type': 'application/json', authorization: 'Bearer antseed' },
+        body: JSON.stringify(buildGroqBody({ system, text, fence, maxTokens, model, purpose }))
+      });
+    } catch (raw) {
+      // Сеть до 127.0.0.1 не дошла — значит, приложение закрыто.
+      if (signal?.aborted || isAbortError(raw)) throw raw;
+      throw antseedErrorFrom(0, null);
+    }
+    if (!res.ok) {
+      let error = null;
+      try {
+        error = (await res.json()).error;
+      } catch {
+        // тело не JSON — хватит кода
+      }
+      throw antseedErrorFrom(res.status, error);
+    }
+    const out = await readGroqStream(res, (piece, full) => {
+      watch.started();
+      if (onDelta) onDelta(piece, full);
+    }, antseedErrorFrom, 'AntSeed');
+    return { ...out, model, how: 'AntSeed, GesundAI' };
+  } catch (raw) {
+    if (!signal?.aborted && isAbortError(raw)) throw new TranslationError(`Модель ${model} в AntSeed молчала.`, 'server');
+    throw raw;
+  }
 }
 
 // ——— ChatGPT по подписке ————————————————————————————————————————

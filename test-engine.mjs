@@ -45,6 +45,7 @@ import {
   parseGroqChunk,
   buildGroqBody,
   groqErrorFrom,
+  antseedErrorFrom,
   groqAttempts,
   GROQ_FALLBACK_MODELS,
   translateStream,
@@ -329,6 +330,11 @@ check('везде доллары, центов больше нет', formatCost(
 check('по умолчанию Gemini — у него есть бесплатная квота', providerOf(DEFAULTS), 'gemini');
 check('старые настройки с одним ключом Anthropic уходят на Gemini', providerOf({ apiKey: 'sk-ant-x' }), 'gemini');
 check('Claude — только если выбран явно', providerOf({ provider: 'claude' }), 'claude');
+check('AntSeed — свой поставщик', providerOf({ provider: 'antseed' }), 'antseed');
+check('AntSeed — ключ не нужен', activeKey({ provider: 'antseed' }), 'antseed');
+check('AntSeed — модель GesundAI по умолчанию', /@gpt-6-astra$/.test(modelFor({ ...DEFAULTS, provider: 'antseed' }, 'reply')), true);
+check('AntSeed: приложение закрыто — подсказка', /не открыто/.test(antseedErrorFrom(0, null).message), true);
+check('AntSeed: 402 — кончился баланс', antseedErrorFrom(402, { message: 'Payment required' }).kind, 'auth');
 check('ключ берётся у выбранного провайдера', activeKey({ provider: 'gemini', apiKey: 'sk-ant', geminiKey: 'AIza' }), 'AIza');
 check('ключ Anthropic не подменяет пустой ключ Gemini', activeKey({ provider: 'gemini', apiKey: 'sk-ant', geminiKey: '' }), '');
 check('перевод на Gemini — на основной модели', modelFor({ ...DEFAULTS, geminiModel: 'gemini-9-flash-lite' }, 'translate'), 'gemini-9-flash-lite');
