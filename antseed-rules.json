@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [{ "header": "origin", "operation": "set", "value": "http://127.0.0.1" }]
+    },
+    "condition": {
+      "urlFilter": "|http://127.0.0.1:8377/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  }
+]

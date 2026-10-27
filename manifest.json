@@ -1,14 +1,20 @@
 {
   "manifest_version": 3,
   "name": "Толмач",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Переводчик RU⇄EN и помощник с ответами в X: по подписке ChatGPT, бесплатно на Gemini или Groq, или на Claude. Выдели текст — получи перевод, который звучит как родной.",
   "permissions": [
     "storage",
     "contextMenus",
     "activeTab",
-    "scripting"
+    "scripting",
+    "declarativeNetRequestWithHostAccess"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "antseed_origin", "enabled": true, "path": "antseed-rules.json" }
+    ]
+  },
   "host_permissions": [
     "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*",
