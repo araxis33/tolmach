@@ -353,6 +353,8 @@ function paintProvider() {
   $('moneyCard').classList.toggle('hidden', !needsClaudeKey);
   $('geminiCard').classList.toggle('hidden', claude || ['groq', 'antseed'].includes($('provider').value));
   $('antseedCard').classList.toggle('hidden', $('provider').value !== 'antseed');
+  // Карточка входа ChatGPT под выбором путала: «Вход выполнен» при выбранном AntSeed (27.10).
+  $('chatgptCard').classList.toggle('hidden', $('provider').value !== 'chatgpt');
 }
 
 function fillGeminiModels(ids) {
