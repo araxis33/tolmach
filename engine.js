@@ -52,8 +52,9 @@ export const DEFAULTS = {
   // «отключить эти костыли пока на месяц» — ошибка ChatGPT показывается как есть.
   spareWhenChatgptFails: false,
   // Продавец закрепляется в имени модели «<peerId>@<модель>»: GesundAI даёт больше
-  // всего ANTS на доллар, gpt-6-astra переводит за ~3 с (замер 27.10).
-  antseedModel: '983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-astra',
+  // всего ANTS на доллар. 29.10 astra стала давать первое слово за 5–11 с и не
+  // влезала в 7 с на перевод («молчала»), luna — за 1,4–6 с (4 замера).
+  antseedModel: '983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna',
   // Ответ по V3 на astra и sol молчит дольше 25 с (прокси не шлёт событий раздумья);
   // luna даёт первое слово за ~8 с, весь ответ за ~12 с (замер 27.10).
   antseedReplyModel: '983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna',

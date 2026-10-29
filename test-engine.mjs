@@ -332,7 +332,7 @@ check('старые настройки с одним ключом Anthropic ух
 check('Claude — только если выбран явно', providerOf({ provider: 'claude' }), 'claude');
 check('AntSeed — свой поставщик', providerOf({ provider: 'antseed' }), 'antseed');
 check('AntSeed — ключ не нужен', activeKey({ provider: 'antseed' }), 'antseed');
-check('AntSeed — перевод на astra, ответы на luna', [modelFor({ ...DEFAULTS, provider: 'antseed' }, 'translate').endsWith('@gpt-6-astra'), modelFor({ ...DEFAULTS, provider: 'antseed' }, 'reply').endsWith('@gpt-6-luna')], [true, true]);
+check('AntSeed — перевод и ответы на luna', [modelFor({ ...DEFAULTS, provider: 'antseed' }, 'translate').endsWith('@gpt-6-luna'), modelFor({ ...DEFAULTS, provider: 'antseed' }, 'reply').endsWith('@gpt-6-luna')], [true, true]);
 check('AntSeed: приложение закрыто — подсказка', /не открыто/.test(antseedErrorFrom(0, null).message), true);
 check('AntSeed: 402 — кончился баланс', antseedErrorFrom(402, { message: 'Payment required' }).kind, 'auth');
 check('ключ берётся у выбранного провайдера', activeKey({ provider: 'gemini', apiKey: 'sk-ant', geminiKey: 'AIza' }), 'AIza');

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Толмач",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "Переводчик RU⇄EN и помощник с ответами в X: по подписке ChatGPT, бесплатно на Gemini или Groq, или на Claude. Выдели текст — получи перевод, который звучит как родной.",
   "permissions": [
     "storage",
