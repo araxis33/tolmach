@@ -12,6 +12,7 @@ import {
   composeReplyInput,
   buildReplySystem,
   REPLY_PROMPT_V3,
+  REPLY_PROMPT_V4,
   priceOf,
   formatCost,
   DEFAULTS,
@@ -216,6 +217,31 @@ check('ограды кода не показываются', V3P.some((b) => b.k
 check('недописанная строка варианта уже видна, без счётчика', parseV3Output('5 [Bridge] это как Aave на').filter((b) => b.kind === 'variant')[0].chars, null);
 check('пустой ответ модели не ломает разбор', parseV3Output(''), []);
 
+// ——— вывод V4 (31.10): «ЛУЧШИЙ РЕПЛАЙ» + «ЕЩЁ ВАРИАНТЫ» ——————————————
+const V4_OUT = [
+  'КОНТЕКСТ: крипто, bullish, проектный аккаунт',
+  'ЗАЦЕПКА: Autopilot is LIVE',
+  '',
+  '**ЛУЧШИЙ РЕПЛАЙ**',
+  'Autopilot снимает самое скучное: следить за 47 часами',
+  '[Build-on, спокойный, 54 симв]',
+  'Почему лучший: цепляется за боль ручной аллокации',
+  '',
+  'ЕЩЁ ВАРИАНТЫ',
+  '1. Сколько sAERO включат за первые сутки? [Genuine Question, вопрос вместо вывода]',
+  '2. **Наконец можно спать** [Light Wit] [короче и с юмором]',
+  '',
+  'ПРОВЕРКА: только исходный пост',
+  'СОВЕТ: лучший, он попадает в суть'
+].join(NL2);
+const V4P = parseV3Output(V4_OUT);
+const V4VARS = V4P.filter((b) => b.kind === 'variant');
+check('V4: лучший и два варианта находятся', V4VARS.map((v) => v.n), ['★', 1, 2]);
+check('V4: лучший помечен и без строки тегов в тексте', [V4VARS[0].top, V4VARS[0].text], ['лучший', 'Autopilot снимает самое скучное: следить за 47 часами']);
+check('V4: тип и счётчик лучшего берутся из строки [..]', [V4VARS[0].type, V4VARS[0].chars], ['Build-on, спокойный, 54 симв', 54]);
+check('V4: теги в конце варианта не попадают в текст', [V4VARS[1].text, V4VARS[2].text], ['Сколько sAERO включат за первые сутки?', 'Наконец можно спать']);
+check('V4: служебные строки остаются текстом', V4P.some((b) => b.kind === 'text' && b.text.includes('ПРОВЕРКА')) && V4P[0].text.startsWith('КОНТЕКСТ'), true);
+
 
 // ——— что видит модель, когда пишет ответ ——————————————————————
 const FULL_CTX = composeReplyInput({
@@ -257,9 +283,11 @@ check(
 
 
 // ——— промпт ответов ————————————————————————————————————————————
-// 26.09 его решение: никакой обёртки. Модель получает REPLY PROMPT V3 слово в слово.
-check('системный промпт ответов — ровно V3, без добавок', buildReplySystem({ persona: 'кто-то', fence: 'X1', glossLang: 'ru' }), REPLY_PROMPT_V3);
-check('V3 вшит целиком, от роли до финальной проверки', REPLY_PROMPT_V3.includes('## РОЛЬ') && REPLY_PROMPT_V3.includes('ФИНАЛЬНАЯ ПРОВЕРКА (12 пунктов'), true);
+// 26.09 его решение: никакой обёртки. Модель получает промпт слово в слово.
+// 31.10: V4 вместо V3; V3 остаётся в коде для отката.
+check('системный промпт ответов — ровно V4, без добавок', buildReplySystem({ persona: 'кто-то', fence: 'X1', glossLang: 'ru' }), REPLY_PROMPT_V4);
+check('V4 вшит целиком, от заголовка до сути V4', REPLY_PROMPT_V4.startsWith('# REPLY PROMPT V4') && REPLY_PROMPT_V4.includes('## 13. СТАНДАРТНЫЙ ФОРМАТ ОТВЕТА') && REPLY_PROMPT_V4.includes('**Суть V4:**'), true);
+check('V3 остался в коде для отката', REPLY_PROMPT_V3.includes('## РОЛЬ') && REPLY_PROMPT_V3.includes('ФИНАЛЬНАЯ ПРОВЕРКА (12 пунктов'), true);
 
 // ——— что видно у поста на X ————————————————————————————————————
 const X_CTX = composeReplyInput({

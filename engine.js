@@ -2,6 +2,10 @@
 // Groq (тоже бесплатный — запасной, когда Gemini перегружен) и Claude (платный ключ
 // Anthropic). Вызывается только из service worker: ключ никогда не попадает в страницу.
 
+import { REPLY_PROMPT_V4 } from './reply-prompt-v4.js';
+
+export { REPLY_PROMPT_V4 };
+
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -1706,11 +1710,12 @@ Concrete Suggestion, Insight Add-on и Build-on особенно склонны 
 
 Если хоть один пункт не пройден — переписать. Не выдавать, пока все 12 не закрыты.`;
 
-// 26.09 его решение: никакой обёртки вокруг V3. Модель получает его промпт слово
-// в слово, как в Grok, и печатает ответ в формате самого V3. Карточка разбирает
+// 26.09 его решение: никакой обёртки вокруг промпта. Модель получает его слово
+// в слово, как в Grok, и печатает ответ в формате самого промпта. Карточка разбирает
 // этот формат сама (parseV3Output). Параметры оставлены, чтобы не трогать вызовы.
+// 31.10: V3 заменён на V4 (его файл); V3 оставлен выше для отката.
 export function buildReplySystem() {
-  return REPLY_PROMPT_V3;
+  return REPLY_PROMPT_V4;
 }
 
 // Строка варианта из «СТРУКТУРЫ ВЫВОДА» V3: «1 [Straight Value] текст — 87 симв.».
@@ -1724,18 +1729,59 @@ function unquote(s) {
   return (m ? m[1] : t).trim();
 }
 
+// Формат вывода V4 (§13): «ЛУЧШИЙ РЕПЛАЙ» — следующая строка текст, за ней строка
+// «[тип, тон, N симв]»; «ЕЩЁ ВАРИАНТЫ» — «1. текст [тип и чем отличается]».
+const V4_BEST = /^[*_#\s]*ЛУЧШИЙ\s+РЕПЛАЙ[*_\s:]*$/i;
+const V4_ALTS = /^[*_#\s]*ЕЩ[ЁЕ]\s+ВАРИАНТЫ[*_\s:]*$/i;
+const V4_ALT = /^[*_\s]*(\d{1,2})[.)][*_\s]+(.+)$/;
+const V4_META = /^\s*\[([^\]]+)\]\s*$/;
+const V4_STOP = /^[*_\s]*(ПРОВЕРКА|СОВЕТ|Почему лучший|КОНТЕКСТ|ЗАЦЕПКА)\b/i;
+
+function v4Variant(n, body, top) {
+  const tail = body.match(/((?:\s*\[[^\]]*\])+)\s*$/);
+  const tags = tail ? [...tail[1].matchAll(/\[([^\]]*)\]/g)].map((m) => m[1].trim()) : [];
+  const text = unquote((tail ? body.slice(0, tail.index) : body).replace(/[*_]+$/, ''));
+  const chars = tags.join(' ').match(/(\d+)\s*симв/);
+  return { kind: 'variant', n, type: tags.join(' · ') || (top ? 'лучший' : 'вариант'), text, chars: chars ? Number(chars[1]) : null, top };
+}
+
 /**
- * Разбирает вывод V3 по порядку строк: варианты — отдельно (их можно вставить),
- * всё остальное — текстом как есть. Варианты из ТОП-3 получают метку топа.
+ * Разбирает вывод V3 и V4 по порядку строк: варианты — отдельно (их можно вставить),
+ * всё остальное — текстом как есть. Варианты из ТОП-3 V3 и «лучший» V4 получают метку.
  */
 export function parseV3Output(raw) {
   const blocks = [];
   const tops = new Map();
+  let mode = '';
+  let best = null;
   for (const line of String(raw || '').split('\n')) {
     if (/^\s*```/.test(line)) continue;
+    if (V4_BEST.test(line) || V4_ALTS.test(line) || V4_STOP.test(line)) {
+      mode = V4_BEST.test(line) ? 'best' : V4_ALTS.test(line) ? 'alts' : '';
+      best = null;
+    } else if (mode === 'best' && line.trim()) {
+      const meta = line.match(V4_META);
+      if (best && meta) {
+        const tagged = v4Variant(best.n, `x [${meta[1]}]`, best.top);
+        best.type = tagged.type;
+        best.chars = tagged.chars;
+        continue;
+      }
+      if (!best && !meta) {
+        best = v4Variant('★', line, 'лучший');
+        blocks.push(best);
+        continue;
+      }
+    } else if (mode === 'alts') {
+      const a = line.match(V4_ALT);
+      if (a) {
+        blocks.push(v4Variant(Number(a[1]), a[2], ''));
+        continue;
+      }
+    }
     const top = line.match(V3_TOP);
     if (top) tops.set(Number(top[2]), top[1].trim());
-    const v = line.match(V3_VARIANT);
+    const v = mode ? null : line.match(V3_VARIANT);
     if (v) {
       blocks.push({ kind: 'variant', n: Number(v[1]), type: v[2].trim(), text: unquote(v[3]), chars: v[4] ? Number(v[4]) : null });
       continue;
@@ -1745,7 +1791,7 @@ export function parseV3Output(raw) {
     else blocks.push({ kind: 'text', text: line });
   }
   for (const b of blocks) {
-    if (b.kind === 'variant' && tops.has(b.n)) b.top = tops.get(b.n);
+    if (b.kind === 'variant' && !b.top && tops.has(b.n)) b.top = tops.get(b.n);
     if (b.kind === 'text') b.text = b.text.replace(/^\n+|\s+$/g, '');
   }
   return blocks.filter((b) => b.kind === 'variant' || b.text);
