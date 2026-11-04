@@ -19,9 +19,9 @@
     { id: 'formal', label: 'Официально' }
   ];
 
-  let settings = { showBubble: true, showTweetButton: true };
+  let settings = { showBubble: true, showTweetButton: true, showHoverButton: true };
   chrome.storage.local
-    .get(['showBubble', 'showTweetButton'])
+    .get(['showBubble', 'showTweetButton', 'showHoverButton'])
     .then((s) => {
       Object.assign(settings, s);
       syncTweetButtons();
@@ -29,6 +29,10 @@
     .catch(() => {});
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.showBubble) settings.showBubble = changes.showBubble.newValue;
+    if (changes.showHoverButton) {
+      settings.showHoverButton = changes.showHoverButton.newValue;
+      if (settings.showHoverButton === false) hideHover();
+    }
     if (changes.showTweetButton) {
       settings.showTweetButton = changes.showTweetButton.newValue;
       syncTweetButtons();
@@ -141,9 +145,173 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       hideBubble();
+      hideHover();
       closeCard();
     }
   });
+
+  // ——— кнопка при наведении: абзац на любом сайте, сообщение в Discord ————
+  // 04.11 его слова: выделять текст ради перевода «долго и неудобно». Навёл мышь
+  // на абзац или сообщение — рядом встаёт маленькая кнопка, клик переводит блок целиком.
+  // В Discord кнопка садится слева от панели реакций, на X посты не трогаем —
+  // там свои кнопки в ряду действий.
+  const HOVER_MIN = 20;
+  const HOVER_MAX = 3000;
+  const HOVER_DELAY_MS = 250;
+  const BLOCK_DISPLAY = /^(block|list-item|table-cell|flow-root)$/;
+  const DISCORD_MSG = 'li[id^="chat-messages-"]';
+  const DISCORD_TEXT = '[id^="message-content-"], [class*="embedTitle_"], [class*="embedDescription_"], [class*="embedFieldValue_"]';
+  let hoverBtn = null;
+  let hoverBlock = null;
+  let hoverTimer = 0;
+
+  const onDiscord = () => /(^|\.)discord\.com$/i.test(location.hostname);
+
+  function hideHover() {
+    clearTimeout(hoverTimer);
+    hoverTimer = 0;
+    hoverBtn?.remove();
+    hoverBtn = null;
+    hoverBlock = null;
+  }
+
+  function discordText(msg) {
+    const seen = new Set();
+    for (const n of msg.querySelectorAll(DISCORD_TEXT)) {
+      // Цитата сообщения, на которое отвечают, — не текст этого сообщения.
+      if (n.closest('[class*="repliedMessage_"], [id^="message-reply-context-"]')) continue;
+      const t = tidy(n.innerText);
+      if (t) seen.add(t);
+    }
+    return [...seen].join('\n\n');
+  }
+
+  function hoverTarget(node) {
+    if (!node || !node.closest) return null;
+    if (node.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return null;
+
+    if (onDiscord()) {
+      const msg = node.closest(DISCORD_MSG);
+      if (!msg) return null;
+      const text = discordText(msg);
+      return text.length >= 2 ? { el: msg, text, discord: true } : null;
+    }
+    if (onX() && node.closest(TWEET_SEL)) return null;
+
+    // Ближайший блочный предок с текстом: абзац, пункт списка, ячейка, цитата.
+    let cur = node;
+    let guard = 0;
+    while (cur && cur !== document.body && cur !== document.documentElement && guard++ < 12) {
+      const display = getComputedStyle(cur).display;
+      if (BLOCK_DISPLAY.test(display)) {
+        const text = tidy(cur.innerText || '');
+        if (text.length < HOVER_MIN) {
+          cur = cur.parentElement;
+          continue;
+        }
+        // Обёртка над многими абзацами — не абзац: кнопка на ней переводила бы полстраницы.
+        if (text.length > HOVER_MAX || cur.querySelectorAll('p, li, h1, h2, h3, h4, blockquote').length > 2) return null;
+        return { el: cur, text };
+      }
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  function placeHover(target) {
+    const origin = hostOrigin();
+    const vw = document.documentElement.clientWidth;
+    const size = 28;
+    let x;
+    let y;
+    const bar = target.discord ? target.el.querySelector('[class*="buttonsInner_"]') : null;
+    if (bar) {
+      const r = bar.getBoundingClientRect();
+      x = r.left - size - 6;
+      y = r.top + (r.height - size) / 2;
+    } else {
+      const r = target.el.getBoundingClientRect();
+      // Справа от блока, если есть место, иначе в его правом верхнем углу.
+      x = r.right + 6 + size <= vw ? r.right + 6 : r.right - size - 4;
+      y = target.discord ? r.top + 4 : r.top;
+    }
+    // Начало длинного сообщения Discord ушло вверх — держим кнопку у верхнего края
+    // видимой ленты (с запасом на плашку «новые сообщения»), а не над окном.
+    const feed = target.discord ? target.el.closest('[class*="scroller_"]') : null;
+    if (feed) y = Math.max(y, feed.getBoundingClientRect().top + 36);
+    x = Math.min(Math.max(4, x), vw - size - 4);
+    hoverBtn.style.left = `${x + window.scrollX - origin.x}px`;
+    hoverBtn.style.top = `${Math.max(4, y) + window.scrollY - origin.y}px`;
+  }
+
+  function showHover(target) {
+    hoverBtn?.remove();
+    const root = ui();
+    hoverBlock = target.el;
+    hoverBtn = el('button', 'tm-hover');
+    hoverBtn.title = 'Толмач: перевести';
+    hoverBtn.innerHTML = ICON_GLYPH;
+    hoverBtn.addEventListener('mousedown', (e) => e.preventDefault());
+    hoverBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const rect = target.el.getBoundingClientRect();
+      const fresh = target.discord ? discordText(target.el) || target.text : target.text;
+      hideHover();
+      openHoverCard(fresh, rect, target);
+    });
+    root.append(hoverBtn);
+    placeHover(target);
+  }
+
+  function openHoverCard(text, rect, target) {
+    const pageTitle = tidy(document.title);
+    const context = {
+      page: tidy(pageTitle ? pageTitle + ' — ' + location.href : location.href).slice(0, 300),
+      near: '',
+      post: ''
+    };
+    // В Discord разговор — это сообщения выше: они нужны кнопке «Ответить» в карточке.
+    if (target.discord) {
+      const prev = [];
+      let m = target.el.previousElementSibling;
+      while (m && prev.length < 3) {
+        if (m.matches(DISCORD_MSG)) {
+          const t = discordText(m);
+          if (t) prev.unshift(t);
+        }
+        m = m.previousElementSibling;
+      }
+      context.near = prev.join('\n---\n').slice(0, CTX_NEAR_MAX);
+    }
+    closeCard();
+    current = { text, tone: null, rect, context };
+    card = buildCard(rect);
+    startTranslate(text, rect, null);
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    if (settings.showHoverButton === false) return;
+    if (host && e.composedPath().includes(host)) {
+      clearTimeout(hoverTimer); // мышь на нашей кнопке — не убирать её
+      return;
+    }
+    if (bubble) return; // есть выделение — работает кнопка выделения
+    const target = hoverTarget(e.target);
+    if (target && target.el === hoverBlock) return;
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => {
+      hoverTimer = 0;
+      if (target) showHover(target);
+      else {
+        hoverBtn?.remove();
+        hoverBtn = null;
+        hoverBlock = null;
+      }
+    }, HOVER_DELAY_MS);
+  });
+
+  // Discord и многие сайты листают внутренний блок, а не окно: кнопка осталась бы висеть.
+  document.addEventListener('scroll', () => hoverBtn && hideHover(), true);
 
   // ——— контекст вокруг выделения ————————————————————————————————
   // Ответить по существу можно, только понимая, о чём речь. Выделенных слов для
@@ -1217,6 +1385,24 @@
   transition: transform .12s ease, background .12s ease;
 }
 .tm-bubble:hover { transform: scale(1.08); background: #23a35c; }
+
+.tm-hover {
+  position: absolute;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,.12);
+  background: #1f8a4c;
+  color: #ffffff;
+  cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(255,255,255,.7), 0 4px 12px rgba(0,0,0,.25);
+  z-index: 2147483647;
+  opacity: .88;
+  transition: transform .12s ease, opacity .12s ease;
+}
+.tm-hover:hover { transform: scale(1.1); opacity: 1; background: #23a35c; }
+.tm-hover svg { width: 15px; height: 15px; }
 
 .tm-card {
   position: absolute;

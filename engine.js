@@ -68,6 +68,7 @@ export const DEFAULTS = {
   tone: 'natural',
   showBubble: true,    // показывать кнопку у выделения
   showTweetButton: true, // кнопка «Ответить» под каждым постом в X
+  showHoverButton: true, // кнопка перевода при наведении на абзац / сообщение Discord
   showAlt: true,       // просить второй вариант
   glossary: '',        // личный словарь: «строка = перевод», по одной на строку
   persona: '',         // «кто ты» — голос, которым пишутся ответы на чужой текст

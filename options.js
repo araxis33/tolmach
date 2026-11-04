@@ -51,6 +51,7 @@ const FIELDS = {
   model: { el: () => $('model'), prop: 'value' },
   showAlt: { el: () => $('showAlt'), prop: 'checked' },
   showBubble: { el: () => $('showBubble'), prop: 'checked' },
+  showHoverButton: { el: () => $('showHoverButton'), prop: 'checked' },
   glossary: { el: () => $('glossary'), prop: 'value' },
   persona: { el: () => $('persona'), prop: 'value' },
   replyModel: { el: () => $('replyModel'), prop: 'value' },
