@@ -882,6 +882,8 @@
       if (article.querySelector(`[${TWEET_BTN_ATTR}]`)) continue;
       const bar = article.querySelector('[role="group"]');
       if (!bar) continue;
+      const tr = tweetButton(ICON_GLYPH, 'Толмач: перевести пост', () => openTweetTranslate(article, tr));
+      bar.append(tr);
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.setAttribute(TWEET_BTN_ATTR, '1');
@@ -905,10 +907,43 @@
     }
   }
 
-  function openTweetReply(article, btn) {
-    const text = blockText(article);
-    if (!text || text.length < 3) return;
+  // Кнопка «Перевести» рядом с «Ответить»: тот же вид, без выделения текста.
+  function tweetButton(glyph, title, onClick) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute(TWEET_BTN_ATTR, '1');
+    b.title = title;
+    b.innerHTML = glyph;
+    Object.assign(b.style, {
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      width: '34px', height: '34px', padding: '0', margin: '0 2px',
+      border: 'none', borderRadius: '50%', background: 'transparent',
+      color: '#1f8a4c', cursor: 'pointer'
+    });
+    b.addEventListener('mouseenter', () => (b.style.background = 'rgba(31,138,76,.12)'));
+    b.addEventListener('mouseleave', () => (b.style.background = 'transparent'));
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onClick();
+    });
+    return b;
+  }
 
+  // Переводим только сам текст поста (без имени автора и счётчиков).
+  // В карточке остаётся кнопка «Ответить» — ей нужен тот же контекст, что и кнопке под постом.
+  function openTweetTranslate(article, btn) {
+    const body = own(article, '[data-testid="tweetText"]') || article.querySelector('[data-testid="tweetText"]');
+    const text = body ? tidy(body.innerText) : blockText(article);
+    if (!text || text.length < 2) return;
+    const rect = btn.getBoundingClientRect();
+    closeCard();
+    current = { text, tone: null, rect, context: tweetContext(article), tweet: article };
+    card = buildCard(rect);
+    startTranslate(text, rect, null);
+  }
+
+  function tweetContext(article) {
     const near = [];
     let budget = CTX_NEAR_MAX;
     for (const prev of postsBefore(article)) {
@@ -919,13 +954,19 @@
       }
     }
     const pageTitle = tidy(document.title);
-    const context = {
+    return {
       page: tidy(pageTitle ? pageTitle + ' — ' + location.href : location.href).slice(0, 300),
       near: near.join('\n---\n').slice(0, CTX_NEAR_MAX),
       post: '',
       ...tweetExtras(article)
     };
+  }
 
+  function openTweetReply(article, btn) {
+    const text = blockText(article);
+    if (!text || text.length < 3) return;
+
+    const context = tweetContext(article);
     const rect = btn.getBoundingClientRect();
     closeCard();
     current = { text, tone: null, rect, context, tweet: article };
