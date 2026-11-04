@@ -1051,7 +1051,104 @@
     tweetObserver.observe(document.body, { childList: true, subtree: true });
   }
 
+  // ——— кнопка «EN» в поле ответа X ————————————————————————————————
+  // 04.11 его слова: пишет ответ по-русски сам, Толмач переводит, но потом русский
+  // надо стереть и вставить английский. Кнопка перед Reply/Post переводит текст
+  // поля на английский (тон «для твита») и заменяет его прямо в поле. Отправляет он сам.
+  const COMPOSE_BTN_ATTR = 'data-tolmach-compose';
+  const TEXTBOX_SEL = '[data-testid^="tweetTextarea_"][role="textbox"]';
+
+  function addComposerButtons() {
+    for (const send of document.querySelectorAll('[data-testid="tweetButtonInline"], [data-testid="tweetButton"]')) {
+      const row = send.parentElement;
+      if (!row || row.querySelector(`[${COMPOSE_BTN_ATTR}]`)) continue;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute(COMPOSE_BTN_ATTR, '1');
+      b.setAttribute(TWEET_BTN_ATTR, '1'); // та же галочка в Параметрах убирает и эту кнопку
+      b.title = 'Толмач: перевести текст поля на английский и заменить';
+      b.textContent = 'RU → EN';
+      Object.assign(b.style, {
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        height: '34px', padding: '0 14px', margin: '0 8px 0 0',
+        border: '1px solid #1f8a4c', borderRadius: '9999px', background: 'transparent',
+        color: '#1f8a4c', font: '700 14px/1 system-ui, sans-serif', cursor: 'pointer', whiteSpace: 'nowrap'
+      });
+      // Не отдавать фокус: иначе X сочтёт, что из поля ушли, и выделение пропадёт.
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        translateComposer(b);
+      });
+      row.insertBefore(b, send);
+      // Обёртка кнопки Post у X — колонка: без этого наша встаёт над Post, а не рядом.
+      Object.assign(row.style, { flexDirection: 'row', alignItems: 'center' });
+    }
+  }
+
+  // Поле, к которому относится кнопка: то, где курсор, иначе последнее поле
+  // в том же окне (в треде их несколько).
+  function composerBox(btn) {
+    let scope = btn.parentElement;
+    while (scope && scope !== document.body && !scope.querySelector(TEXTBOX_SEL)) scope = scope.parentElement;
+    if (!scope) return null;
+    const active = document.activeElement;
+    if (active && active.matches && active.matches(TEXTBOX_SEL) && scope.contains(active)) return active;
+    const all = scope.querySelectorAll(TEXTBOX_SEL);
+    return all[all.length - 1] || null;
+  }
+
+  async function translateComposer(btn) {
+    const idle = 'RU → EN';
+    const say = (label) => {
+      btn.textContent = label;
+      setTimeout(() => (btn.textContent = idle), 2000);
+    };
+    const box = composerBox(btn);
+    const text = box ? tidy(box.innerText) : '';
+    if (!text) {
+      say('Поле пустое');
+      return;
+    }
+    btn.textContent = 'Перевожу…';
+    btn.disabled = true;
+    let out;
+    try {
+      out = await translateVariant(text);
+    } catch {
+      btn.disabled = false;
+      say('Не перевёл');
+      return;
+    }
+    btn.disabled = false;
+    if (!out) {
+      say('Пустой перевод');
+      return;
+    }
+    // Поле X — редактор Draft.js: выделяем в нём всё и вставляем перевод событием
+    // вставки, как в insertIntoReply. Просто переписать разметку нельзя — X не увидит.
+    box.focus();
+    document.execCommand('selectAll', false, null);
+    await sleep(60);
+    const data = new DataTransfer();
+    data.setData('text/plain', out);
+    box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    await sleep(200);
+    const now = tidy(box.innerText);
+    if (!now.includes(out.slice(0, 24))) {
+      document.execCommand('selectAll', false, null);
+      document.execCommand('insertText', false, out);
+      await sleep(100);
+    }
+    const after = tidy(box.innerText);
+    if (!after.includes(out.slice(0, 24))) say('Не вставил');
+    else if (after.includes(text.slice(0, 24))) say('Русский остался — проверь');
+    else btn.textContent = idle;
+  }
+
   function addTweetButtons() {
+    addComposerButtons();
     for (const article of document.querySelectorAll(TWEET_SEL)) {
       if (article.querySelector(`[${TWEET_BTN_ATTR}]`)) continue;
       const bar = article.querySelector('[role="group"]');
