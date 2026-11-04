@@ -55,13 +55,15 @@ export const DEFAULTS = {
   // Подстраховка Gemini/Groq, когда ChatGPT не смог. ВЫКЛЮЧЕНА по его решению 08.10:
   // «отключить эти костыли пока на месяц» — ошибка ChatGPT показывается как есть.
   spareWhenChatgptFails: false,
-  // Продавец закрепляется в имени модели «<peerId>@<модель>»: GesundAI даёт больше
-  // всего ANTS на доллар. 29.10 astra стала давать первое слово за 5–11 с и не
+  // Продавец закрепляется в имени модели «<peerId>@<модель>». До 04.11 был GesundAI
+  // (больше всего ANTS на доллар), 04.11 его узел перестал отвечать (502, таймаут) —
+  // переключено на Super Seeder: luna 2,2–3,2 с на перевод (замер 04.11, его «переключи»).
+  // Раньше: 29.10 astra стала давать первое слово за 5–11 с и не
   // влезала в 7 с на перевод («молчала»), luna — за 1,4–6 с (4 замера).
-  antseedModel: '983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna',
+  antseedModel: 'd19ffae0e85b5230422019926b2f37ec0f1f41f3@gpt-6-luna',
   // Ответ по V3 на astra и sol молчит дольше 25 с (прокси не шлёт событий раздумья);
   // luna даёт первое слово за ~8 с, весь ответ за ~12 с (замер 27.10).
-  antseedReplyModel: '983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna',
+  antseedReplyModel: 'd19ffae0e85b5230422019926b2f37ec0f1f41f3@gpt-6-luna',
   model: 'claude-opus-5',
   native: 'ru',        // родной язык — на него переводим всё иностранное
   foreign: 'en',       // рабочий второй язык
@@ -84,6 +86,16 @@ export const PRICES = {
 };
 
 /** Цена запроса в долларах — по числам, которые вернул сам API. */
+// Имя продавца AntSeed для подписи под переводом: по peerId из «<peerId>@<модель>».
+const ANTSEED_PEERS = {
+  d19ffae0e85b5230422019926b2f37ec0f1f41f3: 'Super Seeder',
+  '983e9de990b9ac8d36d373db5d0b49a4d7f7d826': 'GesundAI'
+};
+export function antseedPeerName(model = '') {
+  const peer = String(model).split('@')[0];
+  return ANTSEED_PEERS[peer] || (String(model).includes('@') ? peer.slice(0, 8) : 'авто');
+}
+
 export function priceOf(model, usage, now = new Date()) {
   const p = PRICES[model];
   if (!p || !usage) return 0;
@@ -1133,7 +1145,7 @@ async function runAntseed({ cfg, model, purpose, system, text, fence, maxTokens,
       watch.started();
       if (onDelta) onDelta(piece, full);
     }, antseedErrorFrom, 'AntSeed');
-    return { ...out, model, how: 'AntSeed, GesundAI' };
+    return { ...out, model, how: 'AntSeed, ' + antseedPeerName(model) };
   } catch (raw) {
     if (!signal?.aborted && isAbortError(raw)) throw new TranslationError(`Модель ${model} в AntSeed молчала.`, 'server');
     throw raw;
