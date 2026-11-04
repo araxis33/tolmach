@@ -254,7 +254,13 @@
     hoverBtn.addEventListener('mousedown', (e) => e.preventDefault());
     hoverBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const rect = target.el.getBoundingClientRect();
+      // Карточка — у самой кнопки, и целиком в окне: под блоком она уезжала
+      // за нижний край (в Discord сообщения внизу ленты — её не было видно вовсе).
+      const b = hoverBtn.getBoundingClientRect();
+      // Высота карточки: тело до 46vh (.tm-body) плюс шапка, тоны и кнопки.
+      const cardH = Math.round(window.innerHeight * 0.46) + 170;
+      const top = Math.max(10, Math.min(b.bottom, window.innerHeight - cardH - 10));
+      const rect = { left: b.left, right: b.right, top, bottom: top, width: b.width, height: 0 };
       const fresh = target.discord ? discordText(target.el) || target.text : target.text;
       hideHover();
       openHoverCard(fresh, rect, target);
