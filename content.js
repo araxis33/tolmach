@@ -762,7 +762,7 @@
   }
 
   // Переводит вариант обычным переводом Толмача и отдаёт готовый текст.
-  function translateVariant(text) {
+  function translateVariant(text, to = 'en') {
     return new Promise((resolve, reject) => {
       let p;
       try {
@@ -780,7 +780,8 @@
           reject(new Error(msg.message));
         }
       });
-      p.postMessage({ type: 'translate', text, tone: 'tweet', targetOverride: 'en' });
+      // На английский — тоном «для твита», на русский — обычным переводом.
+      p.postMessage({ type: 'translate', text, tone: to === 'en' ? 'tweet' : null, targetOverride: to });
     });
   }
 
@@ -1051,7 +1052,7 @@
     tweetObserver.observe(document.body, { childList: true, subtree: true });
   }
 
-  // ——— кнопка «EN» в поле ответа X ————————————————————————————————
+  // ——— кнопка «RU ⇄ EN» в поле ответа X ————————————————————————————————
   // 04.11 его слова: пишет ответ по-русски сам, Толмач переводит, но потом русский
   // надо стереть и вставить английский. Кнопка перед Reply/Post переводит текст
   // поля на английский (тон «для твита») и заменяет его прямо в поле. Отправляет он сам.
@@ -1066,8 +1067,8 @@
       b.type = 'button';
       b.setAttribute(COMPOSE_BTN_ATTR, '1');
       b.setAttribute(TWEET_BTN_ATTR, '1'); // та же галочка в Параметрах убирает и эту кнопку
-      b.title = 'Толмач: перевести текст поля на английский и заменить';
-      b.textContent = 'RU → EN';
+      b.title = 'Толмач: русский → английский, английский → русский; заменяет текст в поле';
+      b.textContent = 'RU ⇄ EN';
       Object.assign(b.style, {
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         height: '34px', padding: '0 14px', margin: '0 8px 0 0',
@@ -1100,7 +1101,7 @@
   }
 
   async function translateComposer(btn) {
-    const idle = 'RU → EN';
+    const idle = 'RU ⇄ EN';
     const say = (label) => {
       btn.textContent = label;
       setTimeout(() => (btn.textContent = idle), 2000);
@@ -1111,11 +1112,15 @@
       say('Поле пустое');
       return;
     }
-    btn.textContent = 'Перевожу…';
+    // В обе стороны (его просьба 04.11): кириллицы больше — на английский, иначе на русский.
+    const cyr = (text.match(/[Ѐ-ӿ]/g) || []).length;
+    const lat = (text.match(/[A-Za-z]/g) || []).length;
+    const to = cyr >= lat ? 'en' : 'ru';
+    btn.textContent = to === 'en' ? 'Перевожу на EN…' : 'Перевожу на RU…';
     btn.disabled = true;
     let out;
     try {
-      out = await translateVariant(text);
+      out = await translateVariant(text, to);
     } catch {
       btn.disabled = false;
       say('Не перевёл');
@@ -1143,7 +1148,7 @@
     }
     const after = tidy(box.innerText);
     if (!after.includes(out.slice(0, 24))) say('Не вставил');
-    else if (after.includes(text.slice(0, 24))) say('Русский остался — проверь');
+    else if (after.includes(text.slice(0, 24))) say('Старый текст остался — проверь');
     else btn.textContent = idle;
   }
 
