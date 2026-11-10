@@ -1131,6 +1131,7 @@ export function antseedFallbackModel(model, status) {
 
 // Пока закреплённый продавец лежит, не ждём его на каждом переводе: 10 минут сразу авто.
 const ANTSEED_PEER_REST_MS = 10 * 60 * 1000;
+const ANTSEED_SPARE_FIRST_MS = 20000;
 let antseedPeerDownUntil = 0;
 
 async function runAntseed({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta }) {
@@ -1138,8 +1139,10 @@ async function runAntseed({ cfg, model, purpose, system, text, fence, maxTokens,
   // ошибка внутри потока при коде 200 (так AntSeed отдаёт отказ продавца, когда
   // просят поток) и молчание дольше срока первого куска (10.11 отказ GesundAI
   // приходил через 9 с, а переводу дано 7 с). Во всех трёх — ничего не напечатано.
-  const attempt = async (m) => {
-    const watch = withDeadline(signal, ANSWER_DEADLINE_MS, firstByteDeadline(purpose));
+  // Запасным (авто) даём на первое слово больше: сеть сначала выбирает продавца, а luna
+  // перед переводом иногда думает — 10.11 первое слово приходило и за 11 с при сроке 7.
+  const attempt = async (m, spare = false) => {
+    const watch = withDeadline(signal, ANSWER_DEADLINE_MS, spare ? Math.max(firstByteDeadline(purpose), ANTSEED_SPARE_FIRST_MS) : firstByteDeadline(purpose));
     let printed = false;
     try {
       let res;
@@ -1195,7 +1198,7 @@ async function runAntseed({ cfg, model, purpose, system, text, fence, maxTokens,
     let last;
     for (const m of list) {
       try {
-        return await attempt(m);
+        return await attempt(m, true);
       } catch (err) {
         last = err;
         const unservable = err.status === 502 || err.status === 404;
