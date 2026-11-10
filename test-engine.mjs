@@ -1,5 +1,6 @@
 // Проверка чистых функций движка — без сети и без ключа.
 import {
+  antseedFallbackModel,
   detectLang,
   pickDirection,
   parseGlossary,
@@ -889,6 +890,12 @@ check('подпись: не спрашивали вовсе', thinkingLabel(2, f
   check('без входа — понятная подсказка', [nologin && nologin.kind, /Войти через ChatGPT/.test(nologin && nologin.message)], ['nokey', true]);
   globalThis.fetch = realFetch;
 }
+
+
+check('AntSeed: продавец лёг (503) — та же модель без закрепления', antseedFallbackModel('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-astra', 503), 'gpt-6-astra');
+check('AntSeed: лимит продавца (429) — тоже запасной путь', antseedFallbackModel('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna', 429), 'gpt-6-luna');
+check('AntSeed: пустой баланс (402) — без повтора', antseedFallbackModel('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-astra', 402), null);
+check('AntSeed: модель без закрепления — без повтора', antseedFallbackModel('gpt-6-astra', 503), null);
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);

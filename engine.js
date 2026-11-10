@@ -1122,39 +1122,78 @@ export function antseedErrorFrom(status, error) {
   return new TranslationError(`AntSeed не принял запрос (${status}).${said}`, 'argument');
 }
 
+// Закреплённый продавец («<peerId>@<модель>») может лечь у себя: 10.11 у GesundAI
+// поставщик упёрся в лимит (429), и AntSeed отвечал 503 на каждый запрос. Тогда
+// один раз спрашиваем ту же модель без закрепления — сеть сама выберет живого продавца.
+export function antseedFallbackModel(model, status) {
+  return String(model).includes('@') && (status === 429 || status >= 500) ? String(model).split('@').pop() : null;
+}
+
+// Пока закреплённый продавец лежит, не ждём его на каждом переводе: 10 минут сразу авто.
+const ANTSEED_PEER_REST_MS = 10 * 60 * 1000;
+let antseedPeerDownUntil = 0;
+
 async function runAntseed({ cfg, model, purpose, system, text, fence, maxTokens, signal, onDelta }) {
-  const watch = withDeadline(signal, ANSWER_DEADLINE_MS, firstByteDeadline(purpose));
-  try {
-    let res;
+  // Одна попытка со своим сроком. «Продавец лёг» бывает трёх видов: код 429/5xx,
+  // ошибка внутри потока при коде 200 (так AntSeed отдаёт отказ продавца, когда
+  // просят поток) и молчание дольше срока первого куска (10.11 отказ GesundAI
+  // приходил через 9 с, а переводу дано 7 с). Во всех трёх — ничего не напечатано.
+  const attempt = async (m) => {
+    const watch = withDeadline(signal, ANSWER_DEADLINE_MS, firstByteDeadline(purpose));
+    let printed = false;
     try {
-      res = await fetch(`${ANTSEED_BASE}/chat/completions`, {
-        method: 'POST',
-        signal: watch.signal,
-        headers: { 'content-type': 'application/json', authorization: 'Bearer antseed' },
-        body: JSON.stringify(buildGroqBody({ system, text, fence, maxTokens, model, purpose }))
-      });
-    } catch (raw) {
-      // Сеть до 127.0.0.1 не дошла — значит, приложение закрыто.
-      if (signal?.aborted || isAbortError(raw)) throw raw;
-      throw antseedErrorFrom(0, null);
-    }
-    if (!res.ok) {
-      let error = null;
+      let res;
       try {
-        error = (await res.json()).error;
-      } catch {
-        // тело не JSON — хватит кода
+        res = await fetch(`${ANTSEED_BASE}/chat/completions`, {
+          method: 'POST',
+          signal: watch.signal,
+          headers: { 'content-type': 'application/json', authorization: 'Bearer antseed' },
+          body: JSON.stringify(buildGroqBody({ system, text, fence, maxTokens, model: m, purpose }))
+        });
+      } catch (raw) {
+        // Сеть до 127.0.0.1 не дошла — значит, приложение закрыто.
+        if (signal?.aborted || isAbortError(raw)) throw raw;
+        throw antseedErrorFrom(0, null);
       }
-      throw antseedErrorFrom(res.status, error);
+      if (!res.ok) {
+        let error = null;
+        try {
+          error = (await res.json()).error;
+        } catch {
+          // тело не JSON — хватит кода
+        }
+        const err = antseedErrorFrom(res.status, error);
+        err.peerDown = !!antseedFallbackModel(m, res.status);
+        throw err;
+      }
+      const out = await readGroqStream(res, (piece, full) => {
+        printed = true;
+        watch.started();
+        if (onDelta) onDelta(piece, full);
+      }, (status, error) => {
+        const err = antseedErrorFrom(status || 503, error);
+        err.peerDown = !printed;
+        return err;
+      }, 'AntSeed');
+      return { ...out, model: m, how: 'AntSeed, ' + antseedPeerName(m) };
+    } catch (raw) {
+      if (!signal?.aborted && isAbortError(raw)) {
+        const err = new TranslationError(`Модель ${m} в AntSeed молчала.`, 'server');
+        err.peerDown = !printed;
+        throw err;
+      }
+      throw raw;
     }
-    const out = await readGroqStream(res, (piece, full) => {
-      watch.started();
-      if (onDelta) onDelta(piece, full);
-    }, antseedErrorFrom, 'AntSeed');
-    return { ...out, model, how: 'AntSeed, ' + antseedPeerName(model) };
-  } catch (raw) {
-    if (!signal?.aborted && isAbortError(raw)) throw new TranslationError(`Модель ${model} в AntSeed молчала.`, 'server');
-    throw raw;
+  };
+
+  const spare = antseedFallbackModel(model, 503);
+  if (spare && Date.now() < antseedPeerDownUntil) return attempt(spare);
+  try {
+    return await attempt(model);
+  } catch (err) {
+    if (!spare || !err.peerDown || signal?.aborted) throw err;
+    antseedPeerDownUntil = Date.now() + ANTSEED_PEER_REST_MS;
+    return attempt(spare);
   }
 }
 
