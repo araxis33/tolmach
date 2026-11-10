@@ -1163,6 +1163,7 @@ async function runAntseed({ cfg, model, purpose, system, text, fence, maxTokens,
           // тело не JSON — хватит кода
         }
         const err = antseedErrorFrom(res.status, error);
+        err.status = res.status;
         err.peerDown = !!antseedFallbackModel(m, res.status);
         throw err;
       }
@@ -1186,15 +1187,38 @@ async function runAntseed({ cfg, model, purpose, system, text, fence, maxTokens,
     }
   };
 
-  const spare = antseedFallbackModel(model, 503);
-  if (spare && Date.now() < antseedPeerDownUntil) return attempt(spare);
+  // Запасные: та же модель у любого продавца, потом gpt-6-luna. 10.11 после
+  // перезапуска приложения astra у других продавцов вышла за его лимит цены
+  // («No policy-allowed peer…», 502), а luna в лимит укладывалась.
+  const spares = antseedSpareModels(model);
+  const tryFrom = async (list) => {
+    let last;
+    for (const m of list) {
+      try {
+        return await attempt(m);
+      } catch (err) {
+        last = err;
+        const unservable = err.status === 502 || err.status === 404;
+        if (signal?.aborted || !(err.peerDown || unservable)) throw err;
+      }
+    }
+    throw last;
+  };
+  if (spares.length && Date.now() < antseedPeerDownUntil) return tryFrom(spares);
   try {
     return await attempt(model);
   } catch (err) {
-    if (!spare || !err.peerDown || signal?.aborted) throw err;
+    if (!spares.length || !err.peerDown || signal?.aborted) throw err;
     antseedPeerDownUntil = Date.now() + ANTSEED_PEER_REST_MS;
-    return attempt(spare);
+    return tryFrom(spares);
   }
+}
+
+/** Куда идти, если закреплённый продавец лёг: та же модель на авто, потом luna на авто. */
+export function antseedSpareModels(model) {
+  const bare = antseedFallbackModel(model, 503);
+  if (!bare) return [];
+  return bare === 'gpt-6-luna' ? [bare] : [bare, 'gpt-6-luna'];
 }
 
 // ——— ChatGPT по подписке ————————————————————————————————————————

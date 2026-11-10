@@ -1,6 +1,7 @@
 // Проверка чистых функций движка — без сети и без ключа.
 import {
   antseedFallbackModel,
+  antseedSpareModels,
   detectLang,
   pickDirection,
   parseGlossary,
@@ -896,6 +897,9 @@ check('AntSeed: продавец лёг (503) — та же модель без 
 check('AntSeed: лимит продавца (429) — тоже запасной путь', antseedFallbackModel('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna', 429), 'gpt-6-luna');
 check('AntSeed: пустой баланс (402) — без повтора', antseedFallbackModel('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-astra', 402), null);
 check('AntSeed: модель без закрепления — без повтора', antseedFallbackModel('gpt-6-astra', 503), null);
+
+check('AntSeed: запасные для astra — astra на авто, потом luna', antseedSpareModels('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-astra'), ['gpt-6-astra', 'gpt-6-luna']);
+check('AntSeed: запасные для luna — только luna на авто', antseedSpareModels('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna'), ['gpt-6-luna']);
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);
