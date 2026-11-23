@@ -901,5 +901,19 @@ check('AntSeed: модель без закрепления — без повто
 check('AntSeed: запасные для astra — astra на авто, потом luna', antseedSpareModels('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-astra'), ['gpt-6-astra', 'gpt-6-luna']);
 check('AntSeed: запасные для luna — только luna на авто', antseedSpareModels('983e9de990b9ac8d36d373db5d0b49a4d7f7d826@gpt-6-luna'), ['gpt-6-luna']);
 
+// 24.11: его хуманайзер идёт только в перевод на английский тоном «Для твита».
+{
+  const bodies = [];
+  const s = { ...DEFAULTS, provider: 'chatgpt', native: 'ru', foreign: 'en',
+    chatgptAuth: { accessToken: 'tok', expiresAt: Date.now() + 3600000 }, chatgptModel: 'gpt-x-mini', geminiKey: '', groqKey: '' };
+  globalThis.fetch = async (url, init) => { bodies.push(JSON.stringify(JSON.parse(init.body))); throw new Error('stop'); };
+  for (const tone of ['tweet', 'natural']) {
+    try { await translateStream({ text: 'Сегодня хорошая погода', settings: s, tone }); } catch (e) { /* только тело запроса */ }
+  }
+  try { await translateStream({ text: 'Nice weather today', settings: s, tone: 'tweet' }); } catch (e) { /* EN → RU */ }
+  check('хуманайзер: твит на EN — есть, обычный тон и перевод на RU — нет',
+    [bodies.length >= 3 && bodies[0].includes('testament to'), bodies.slice(1).some((b) => b.includes('testament to'))], [true, false]);
+}
+
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');
 process.exit(failed ? 1 : 0);
