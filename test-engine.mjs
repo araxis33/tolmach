@@ -913,6 +913,8 @@ check('AntSeed: запасные для luna — только luna на авто
   try { await translateStream({ text: 'Nice weather today', settings: s, tone: 'tweet' }); } catch (e) { /* EN → RU */ }
   check('хуманайзер: твит на EN — есть, обычный тон и перевод на RU — нет',
     [bodies.length >= 3 && bodies[0].includes('testament to'), bodies.slice(1).some((b) => b.includes('testament to'))], [true, false]);
+  check('пустые концовки выкидываются только в твите на EN',
+    [bodies[0].includes('Шаблонные финалы выкидывай'), bodies.slice(1).some((b) => b.includes('Шаблонные финалы выкидывай'))], [true, false]);
 }
 
 console.log(failed ? `\n${failed} провалено` : '\nвсе проверки прошли');

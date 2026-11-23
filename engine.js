@@ -233,6 +233,9 @@ export function parseGlossary(raw) {
 // разделы «Несниижаемые правила» и «Анти-ИИ чек-лист», слово в слово). Только тон «Для твита» на английский.
 export const HUMANIZER_EN = "### Несниижаемые правила\n1. Сохраняй смысл, факты и позицию.\n2. Не добавляй новые факты, цифры, имена, источники и не делай догадок.\n3. Без ассистентского тона и служебных фраз.\n4. Без искусственных выводов и концовок-итогов.\n5. Если формулировка слишком категорична или раздута, смягчи и сделай конкретнее, не меняя смысла.\n\n### Анти-ИИ чек-лист\n- **Напыщенность и символизм.** Убирать: pivotal, testament to, plays a key role, landmark moment, underscores the importance, game-changer, symbolizes. Заменять конкретикой или нейтральными связками (is tied to, affects, is used for).\n- **Псевдо-анализ.** Не писать «this shows / this ensures / this demonstrates», если субъект — факт или неодушевлённое явление.\n- **Рекламный позитивизм.** Убирать: vibrant, stunning, captivating, at the heart of, rich legacy, revolutionary.\n- **Дидактика.** Убирать: it's worth noting, it's important to remember, keep in mind.\n- **Шаблонные финалы.** Никаких обобщений про светлое будущее (the future is bright, this is just the beginning) без опоры на факт.\n- **Машинный ритм.** Меньше параллелизмов и «правила трёх». Чередовать длину предложений.";
 
+// 24.11.2026 его «выкидывать»: пустая концовка из русского текста в английский твит не переносится.
+export const ENDINGS_RULE = 'Шаблонные финалы выкидывай, даже если они есть в исходном тексте: «это только начало / this is just the beginning», «будущее за… / the future is bright», «время покажет» и подобные концовки без факта. Остальной смысл сохраняй.';
+
 function buildSystem({ to, from, tone, glossary, wantAlt, noteLang, fence }) {
   const toName = (LANG_NAMES[to] || {}).en || to;
   const fromName = (LANG_NAMES[from] || {}).en || from;
@@ -256,7 +259,7 @@ function buildSystem({ to, from, tone, glossary, wantAlt, noteLang, fence }) {
     '6. If the input is a single word or a short phrase, give the equivalent a native would use in that context — not a list of dictionary senses.',
     '7. Do not soften, censor, explain or improve the content. Profanity in, profanity out.',
     `8. TONE: ${toneRule}`,
-    ...(tone === 'tweet' && to === 'en' ? ['', 'HUMANIZER — apply to the English output (the author rules, in Russian):', HUMANIZER_EN] : []),
+    ...(tone === 'tweet' && to === 'en' ? ['', 'HUMANIZER — apply to the English output (the author rules, in Russian):', HUMANIZER_EN, ENDINGS_RULE] : []),
     '',
     'OUTPUT — follow this shape exactly and output nothing else. No preamble, no "Here is", no surrounding quotes, no markdown code fences.',
     '',
